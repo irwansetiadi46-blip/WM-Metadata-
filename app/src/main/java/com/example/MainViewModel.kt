@@ -31,6 +31,11 @@ enum class MicrostockCsvTarget {
     SHUTTERSTOCK
 }
 
+enum class VectorCsvFormat {
+    SVG,
+    EPS
+}
+
 data class SvgExportDialogState(
     val isIndividual: Boolean,
     val itemId: Int? = null,
@@ -73,7 +78,8 @@ data class ImageItem(
     val previewUri: Uri? = null,
     val previewBytes: ByteArray? = null,
     val processStatus: ProcessStatus = ProcessStatus.IDLE,
-    val aspectRatio: Float = 1.0f
+    val aspectRatio: Float = 1.0f,
+    val originalName: String = name
 ) {
     val isGenerated: Boolean
         get() = individualFileName.isNotBlank() || individualTitle.isNotBlank() || individualDescription.isNotBlank() || individualCategories.isNotBlank() || individualKeywords.isNotBlank() || hasMetadata
@@ -174,6 +180,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getEffectiveBaseName(item: ImageItem): String {
+        if (!_isAutoRenameEnabled.value) {
+            val originalDot = item.originalName.lastIndexOf('.')
+            val origBase = if (originalDot != -1) item.originalName.substring(0, originalDot) else item.originalName
+            if (origBase.isNotBlank()) return origBase
+        }
         val customFileName = item.individualFileName.trim()
         val dotIndex = item.name.lastIndexOf('.')
         val baseNameRaw = if (dotIndex != -1) item.name.substring(0, dotIndex) else item.name
@@ -257,6 +268,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isAutoInjectionEnabled = MutableStateFlow(true)
     val isAutoInjectionEnabled = _isAutoInjectionEnabled.asStateFlow()
+
+    private val _isAutoRenameEnabled = MutableStateFlow(true)
+    val isAutoRenameEnabled = _isAutoRenameEnabled.asStateFlow()
 
     // --- Loading & Injection Progress State ---
     private val _isGeneratingAi = MutableStateFlow(false)
@@ -436,6 +450,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // Auto-load Auto Injection preference (Default ON)
         _isAutoInjectionEnabled.value = prefs.getBoolean("is_auto_injection", true)
+
+        // Auto-load Auto Rename preference (Default ON)
+        _isAutoRenameEnabled.value = prefs.getBoolean("is_auto_rename", true)
 
         // Auto-load Touch Effect preferences (Default ON, Glowing Ring)
         _isTouchEffectEnabled.value = prefs.getBoolean("is_touch_effect_enabled", true)
@@ -653,6 +670,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isAutoInjectionEnabled.value = enabled
         val prefs = context.getSharedPreferences("WarMachinePrefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("is_auto_injection", enabled).apply()
+    }
+
+    fun setAutoRenameEnabled(enabled: Boolean) {
+        _isAutoRenameEnabled.value = enabled
+        val prefs = context.getSharedPreferences("WarMachinePrefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("is_auto_rename", enabled).apply()
+
+        if (!enabled) {
+            _imagesList.value = _imagesList.value.map { item ->
+                if (item.originalName.isNotBlank() && item.name != item.originalName) {
+                    item.copy(name = item.originalName)
+                } else item
+            }
+        } else {
+            _imagesList.value = _imagesList.value.map { item ->
+                val metaFileName = item.individualFileName.trim()
+                if (metaFileName.isNotBlank()) {
+                    val sanitizedBase = sanitizeFileName(metaFileName)
+                    val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
+                    if (sanitizedBase.isNotEmpty()) {
+                        item.copy(name = "$sanitizedBase$ext")
+                    } else item
+                } else item
+            }
+        }
     }
 
     fun setTitleCharLimit(value: Float) {
@@ -1513,6 +1555,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                - No keyword spamming or redundant root words. 
                - Avoid contradictory terms.
                - Use only 1 word for each keyword.
+            8. Categories: Provide 1 to 2 relevant standard Microstock categories (e.g. "Abstract, Technology" or "Business, Finance" or "Nature, Landscapes") separated by comma.
             $blacklistInstruction
 
             Format output strictly matching this schema:
@@ -1941,9 +1984,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             emptyList()
         }
 
-        val ext = if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
+        val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
         val sanitizedBase = if (metaFileName.isNotBlank()) sanitizeFileName(metaFileName) else ""
-        val newFileName = if (sanitizedBase.isNotEmpty()) "$sanitizedBase$ext" else item.name
+        val newFileName = if (_isAutoRenameEnabled.value && sanitizedBase.isNotEmpty()) "$sanitizedBase$ext" else item.originalName.ifBlank { item.name }
 
         viewModelScope.launch {
             _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = true) else it }
@@ -2031,9 +2074,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         emptyList()
                     }
 
-                    val ext = if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
+                    val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
                     val sanitizedBase = if (metaFileName.isNotBlank()) sanitizeFileName(metaFileName) else ""
-                    val newFileName = if (sanitizedBase.isNotEmpty()) "$sanitizedBase$ext" else item.name
+                    val newFileName = if (_isAutoRenameEnabled.value && sanitizedBase.isNotEmpty()) "$sanitizedBase$ext" else item.originalName.ifBlank { item.name }
 
                     try {
                         val bytesToInject = item.originalBytes ?: FileHelper.readBytesFromUri(context, item.uri)
@@ -2132,11 +2175,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 for (i in selected.indices) {
                     val item = selected[i]
-                    val ext = if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
+                    val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
                     val sanitizedBase = if (metaFileName.isNotBlank()) sanitizeFileName(metaFileName) else ""
-                    val newFileName = if (sanitizedBase.isNotEmpty()) {
+                    val newFileName = if (_isAutoRenameEnabled.value && sanitizedBase.isNotEmpty()) {
                         if (selected.size > 1) "$sanitizedBase-${i + 1}$ext" else "$sanitizedBase$ext"
-                    } else item.name
+                    } else item.originalName.ifBlank { item.name }
 
                     try {
                         val bytesToInject = item.originalBytes ?: FileHelper.readBytesFromUri(context, item.uri)
@@ -2338,8 +2381,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         }
                     } else {
-                        val isEps = item.name.endsWith(".eps", ignoreCase = true)
-                        val ext = if (dotIndex != -1) item.name.substring(dotIndex) else if (isEps) ".eps" else ".jpg"
+                        val isEps = item.name.endsWith(".eps", ignoreCase = true) || item.originalName.endsWith(".eps", ignoreCase = true)
+                        val ext = if (!_isAutoRenameEnabled.value) {
+                            if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (isEps) ".eps" else ".jpg"
+                        } else {
+                            if (dotIndex != -1) item.name.substring(dotIndex) else if (isEps) ".eps" else ".jpg"
+                        }
                         val fileName = "$baseName$ext"
                         val mimeType = when {
                             ext.endsWith(".png", true) -> "image/png"
@@ -2430,7 +2477,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                             }
                                         }
                                     } else {
-                                        val ext = if (dotIndex != -1) item.name.substring(dotIndex) else ".jpg"
+                                        val ext = if (!_isAutoRenameEnabled.value) {
+                                            if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else ".jpg"
+                                        } else {
+                                            if (dotIndex != -1) item.name.substring(dotIndex) else ".jpg"
+                                        }
                                         val mimeType = when {
                                             ext.endsWith(".png", true) -> "image/png"
                                             ext.endsWith(".eps", true) -> "application/postscript"
@@ -2459,8 +2510,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         }
                                     }
                                 } else {
-                                    val isEps = item.name.endsWith(".eps", ignoreCase = true)
-                                    val ext = if (dotIndex != -1) item.name.substring(dotIndex) else if (isEps) ".eps" else ".jpg"
+                                    val isEps = item.name.endsWith(".eps", ignoreCase = true) || item.originalName.endsWith(".eps", ignoreCase = true)
+                                    val ext = if (!_isAutoRenameEnabled.value) {
+                                        if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (isEps) ".eps" else ".jpg"
+                                    } else {
+                                        if (dotIndex != -1) item.name.substring(dotIndex) else if (isEps) ".eps" else ".jpg"
+                                    }
                                     val mimeType = when {
                                         ext.endsWith(".png", true) -> "image/png"
                                         ext.endsWith(".eps", true) -> "application/postscript"
@@ -2509,7 +2564,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- CSV Export for Microstock ---
-    fun exportCsv(target: MicrostockCsvTarget) {
+    fun exportCsv(target: MicrostockCsvTarget, vectorFormat: VectorCsvFormat = VectorCsvFormat.SVG) {
         viewModelScope.launch(Dispatchers.IO) {
             val list = _imagesList.value
             if (list.isEmpty()) {
@@ -2527,20 +2582,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val sb = StringBuilder()
                     sb.append("Filename,Title,Keywords,Category\r\n")
                     list.forEach { item ->
-                        val fn = if (item.individualFileName.isNotBlank()) {
-                            val base = item.individualFileName.trim()
-                            val ext = item.name.substringAfterLast('.', "")
-                            if (ext.isNotEmpty() && !base.endsWith(".$ext", ignoreCase = true)) {
-                                "$base.$ext"
-                            } else {
-                                base
-                            }
-                        } else {
-                            item.name
-                        }
+                        val fn = resolveCsvFileName(item, vectorFormat)
                         val title = item.individualTitle.ifBlank { item.name.substringBeforeLast(".") }
                         val kws = item.getEffectiveKeywordItems().map { it.word }.joinToString(", ").ifBlank { item.individualKeywords }
-                        val category = item.individualCategories
+                        val category = formatCategoriesForTarget(item.individualCategories, MicrostockCsvTarget.ADOBESTOCK)
 
                         sb.append(escapeCsv(fn)).append(",")
                         sb.append(escapeCsv(title)).append(",")
@@ -2554,20 +2599,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val sb = StringBuilder()
                     sb.append("Filename,Description,Keywords,Categories\r\n")
                     list.forEach { item ->
-                        val fn = if (item.individualFileName.isNotBlank()) {
-                            val base = item.individualFileName.trim()
-                            val ext = item.name.substringAfterLast('.', "")
-                            if (ext.isNotEmpty() && !base.endsWith(".$ext", ignoreCase = true)) {
-                                "$base.$ext"
-                            } else {
-                                base
-                            }
-                        } else {
-                            item.name
-                        }
+                        val fn = resolveCsvFileName(item, vectorFormat)
                         val desc = item.individualDescription.ifBlank { item.individualTitle.ifBlank { item.name.substringBeforeLast(".") } }
                         val kws = item.getEffectiveKeywordItems().map { it.word }.joinToString(", ").ifBlank { item.individualKeywords }
-                        val categories = item.individualCategories
+                        val categories = formatCategoriesForTarget(item.individualCategories, MicrostockCsvTarget.SHUTTERSTOCK)
 
                         sb.append(escapeCsv(fn)).append(",")
                         sb.append(escapeCsv(desc)).append(",")
@@ -2584,6 +2619,61 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _toastFlow.value = "CSV $fileName tersimpan di WarMachineHybrid"
             } else {
                 _toastFlow.value = "Gagal menyimpan file CSV"
+            }
+        }
+    }
+
+    private fun resolveCsvFileName(item: ImageItem, vectorFormat: VectorCsvFormat): String {
+        val originalBaseName = if (item.originalName.contains('.')) item.originalName.substringBeforeLast('.') else item.originalName
+        val isSvg = item.name.endsWith(".svg", ignoreCase = true) || item.originalName.endsWith(".svg", ignoreCase = true)
+        val isEps = item.name.endsWith(".eps", ignoreCase = true) || item.originalName.endsWith(".eps", ignoreCase = true)
+        val targetVectorExt = if (vectorFormat == VectorCsvFormat.EPS) "eps" else "svg"
+
+        if (!_isAutoRenameEnabled.value) {
+            return if (isSvg || isEps) {
+                "$originalBaseName.$targetVectorExt"
+            } else {
+                item.originalName.ifBlank { item.name }
+            }
+        }
+
+        val baseName = if (item.individualFileName.isNotBlank()) {
+            val raw = item.individualFileName.trim()
+            if (raw.endsWith(".svg", ignoreCase = true) || 
+                raw.endsWith(".eps", ignoreCase = true) || 
+                raw.endsWith(".jpg", ignoreCase = true) || 
+                raw.endsWith(".jpeg", ignoreCase = true) || 
+                raw.endsWith(".png", ignoreCase = true)) {
+                raw.substringBeforeLast('.')
+            } else {
+                raw
+            }
+        } else {
+            originalBaseName
+        }
+
+        return if (isSvg || isEps) {
+            "$baseName.$targetVectorExt"
+        } else {
+            val originalExt = if (item.originalName.contains('.')) item.originalName.substringAfterLast('.', "") else item.name.substringAfterLast('.', "")
+            if (originalExt.isNotEmpty()) "$baseName.$originalExt" else baseName
+        }
+    }
+
+    private fun formatCategoriesForTarget(rawCategories: String, target: MicrostockCsvTarget): String {
+        if (rawCategories.isBlank()) return ""
+        val tokens = rawCategories.split(Regex("[,;/|]+"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        return when (target) {
+            MicrostockCsvTarget.ADOBESTOCK -> {
+                // Category Adobestock cukup ditulis 1 saja
+                tokens.firstOrNull() ?: ""
+            }
+            MicrostockCsvTarget.SHUTTERSTOCK -> {
+                // Categories shutterstock cukup ditulis 2 saja
+                tokens.take(2).joinToString(", ")
             }
         }
     }

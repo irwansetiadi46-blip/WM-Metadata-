@@ -1,108 +1,76 @@
-# Feature: Download CSV for Microstock (Adobe Stock & Shutterstock)
+# Implementation Plan: Fitur Auto Rename Switch
 
-Implementation plan to introduce a CSV export system for generated microstock metadata, featuring Adobe Stock and Shutterstock standard formatting, automated category generation, and direct saving to the downloads directory.
+Menambahkan pengaturan switch **Auto Rename** tepat di bawah baris **Auto Inject Metadata** di halaman Settings / War Engine. Fitur ini memungkinkan pengguna mengaktifkan atau menonaktifkan rename otomatis terhadap file dan hasil ekspor CSV, dengan status default **ON**.
 
-## User Review & Critical Decisions
+---
+
+## 1. User Review Required
 
 > [!IMPORTANT]
-> The user confirmed the following preferences:
-> - **Export Scope**: Export all items currently in the list when downloading CSV.
-> - **Save Destination**: Save directly and automatically to the same folder as metadata-injected files (`Download/WarMachineHybrid`).
-> - **Categories Field**: Add a new editable "Categories" field located between "Description" and "Keywords" in the image detail card. This field will be generated alongside title, description, and keywords by Gemini AI and reflected in the CSV.
-> - **CSV Button Visibility**: The Download CSV button appears in the preview header (to the left of the Vertical/Grid toggle) as soon as at least 1 image has completed metadata generation.
+> **Status Default & Posisi:**
+> - Switch **Auto Rename** diposisikan persis di bawah baris **Auto Inject Metadata** dengan tampilan kartu baris yang identik (teks label `Auto Rename :` dan kontrol `Switch`).
+> - Sesuai instruksi, **tidak ada caption/teks deskripsi tambahan** agar tampilan ringkas dan bersih.
+> - Default status adalah **ON** dan tersimpan di `SharedPreferences` (`is_auto_rename`).
 
 ---
 
-## 1. Overview & Core Concept
+## 2. Proposed Changes
 
-- **What It Does**: Microstock contributors can batch export generated asset metadata into standard, upload-ready CSV files tailored for Adobe Stock and Shutterstock.
-- **Target Audience**: Microstock artists, vector illustrators, and stock photographers who batch upload assets to stock agencies.
-- **Key Value**: Eliminates manual copy-pasting of metadata on microstock contributor portals by generating officially compliant CSV spreadsheets directly from War Machine.
+### ViewModel & Model (`app/src/main/java/com/example/MainViewModel.kt`)
 
----
+1. **State & Persistence:**
+   - Tambahkan `_isAutoRenameEnabled = MutableStateFlow(true)` dan publikasikan sebagai `isAutoRenameEnabled: StateFlow<Boolean>`.
+   - Di `init`, baca nilai tersimpan dari `SharedPreferences("WarMachinePrefs")` dengan kunci `"is_auto_rename"`, default `true`.
+   - Tambahkan fungsi `setAutoRenameEnabled(enabled: Boolean)` untuk mengupdate state dan menyimpan preferensi ke `SharedPreferences`.
 
-## 2. User Experience & Visual Design
+2. **Preservasi Nama File Asli (`ImageItem`):**
+   - Tambahkan properti `originalName: String = name` pada `ImageItem` saat berkas pertama kali diimpor, sehingga nama asli tidak hilang meskipun pernah direname.
 
-### Key User Flows
-1. **Metadata Generation**: User loads images/vectors and runs Generate Metadata.
-2. **Categories Display**: The detail card reveals the newly generated "Categories" field below "Description" and above "Keywords", editable with clear and copy shortcuts.
-3. **Download CSV Trigger**: As soon as at least 1 item has metadata, a **Download CSV** button with download icon and "Csv" text appears to the left of the Grid/Vertical toggle.
-4. **Platform Selection Modal**:
-   - Tapping Download CSV opens a modal with Adobe Stock and Shutterstock selection cards styled like the Microstock cards in War Engine settings (`0xFF10B981` active green, rounded corners, responsive grid).
-   - A prominent **"Save Csv"** button triggers CSV generation and downloads the file.
-5. **Auto-Save & Notification**: The CSV is generated, written to `Download/WarMachineHybrid`, and a success toast confirms the file name and path.
+3. **Logika Rename pada Injeksi & Download:**
+   - Di `injectIndividualMetadata` & `injectMetadata`:
+     - Jika `isAutoRenameEnabled == true`: gunakan nama baru berbasis AI (`newFileName`).
+     - Jika `isAutoRenameEnabled == false`: pertahankan nama asli (`originalName` / `item.name`), tanpa mengubah nama berkas.
+   - Di `getEffectiveBaseName(item)`:
+     - Jika `isAutoRenameEnabled == false`, kembalikan nama dasar asli (`originalName` tanpa ekstensi).
 
-### Visual Styling & Layout
-- **CSV Button**: Compact button with `Icons.Default.Download` and bold "Csv" label in bright cyan (`0xFF38BDF8`) matching the preview controls.
-- **Microstock Popup Dialog**: Dark futuristic surface (`0xFF0B132B` / `0xFF0F1E36`), 12dp rounded corners, animated card selection glow, and a high-contrast Emerald/Cyan action button for "Save Csv".
-
----
-
-## 3. Key Product Decisions & Trade-Offs
-
-- **Standardized CSV Formats**:
-  - **Adobe Stock**:
-    - Columns: `Filename,Title,Keywords,Category,Releases`
-    - Adheres to Adobe Stock contributor bulk metadata upload guidelines.
-  - **Shutterstock**:
-    - Columns: `Filename,Description,Keywords,Categories`
-    - Adheres to Shutterstock contributor bulk CSV upload specifications.
-- **RFC 4180 Escaping**: Commas, double quotes, and line breaks in titles, descriptions, and keywords are properly wrapped and escaped (`""`) to prevent parsing corruption on microstock platforms.
-- **Gemini Schema Extension**: The structured JSON prompt schema is updated to include `"categories"` (1–2 relevant microstock categories, e.g., "Vectors, Backgrounds", "Nature, Animals") during analysis.
+4. **Logika Penamaan CSV (`resolveCsvFileName`):**
+   - Jika `isAutoRenameEnabled == true`: gunakan nama file hasil generate AI (`item.individualFileName`).
+   - Jika `isAutoRenameEnabled == false`: gunakan nama file asli (`item.originalName` / `item.name`) dengan format ekstensi target (SVG/EPS jika format vektor dipilih, atau ekstensi aslinya).
 
 ---
 
-## 4. Technical Architecture & Data Strategy
+### UI (`app/src/main/java/com/example/MainActivity.kt`)
 
-### System Flow Diagram
-```
-┌────────────────────────────────────────────────────────┐
-│                      MainActivity                      │
-│                                                        │
-│  [Download CSV] ──► CsvExportDialog ──► Select Agency  │
-│  (Left of Grid)                         (Adobe / SSTK) │
-│                                                │       │
-└────────────────────────────────────────────────┼───────┘
-                                                 │
-                                                 ▼
-┌────────────────────────────────────────────────────────┐
-│                     MainViewModel                      │
-│                                                        │
-│  • ImageItem: individualCategories                     │
-│  • Gemini Schema: includes "categories"                │
-│  • generateCsvBytes(agency: CsvAgency): ByteArray      │
-│  • exportCsvToDownloads(agency: CsvAgency)             │
-└────────────────────────────────────────────────┼───────┘
-                                                 │
-                                                 ▼
-┌────────────────────────────────────────────────────────┐
-│                      FileHelper                        │
-│                                                        │
-│  • saveBytesToDownloads(..., "Download/WarMachine...") │
-│  • Writes: WarMachine_AdobeStock_Metadata.csv          │
-│    or WarMachine_Shutterstock_Metadata.csv             │
-└────────────────────────────────────────────────────────┘
-```
+1. **Koleksi State:**
+   - Tambahkan `val isAutoRenameEnabled by viewModel.isAutoRenameEnabled.collectAsStateWithLifecycle()` di dalam composable Settings / War Engine.
 
-### Data Model Additions
-```kotlin
-enum class CsvAgency(val displayName: String, val fileNamePrefix: String) {
-    ADOBE_STOCK("Adobe Stock", "WarMachine_AdobeStock_Metadata"),
-    SHUTTERSTOCK("Shutterstock", "WarMachine_Shutterstock_Metadata")
-}
+2. **Komponen Switch Row:**
+   - Di bawah baris `Auto Injection Row`, tambahkan spacer pemisah (`10.dp`).
+   - Tambahkan baris `Auto Rename Row` dengan gaya kartu yang konsisten:
+     - Background gelap transparan dengan sudut melengkung `RoundedCornerShape(10.dp)` dan border `1.dp Color(0x20FFFFFF)`.
+     - Label: `Text("Auto Rename :", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.White)`.
+     - Kontrol: `Switch(checked = isAutoRenameEnabled, onCheckedChange = { viewModel.setAutoRenameEnabled(it) })`.
+     - `Modifier.testTag("auto_rename_switch")`.
+     - **Tanpa caption sampah/teks keterangan tambahan**.
 
-// In ImageItem:
-val individualCategories: String = ""
+---
 
-// In GeneratedMetadata:
-val categories: String? = null
-```
+## 3. Verification Plan
 
-### Component & State Mapping
-- `MainActivity.kt`:
-  - Preview header: Render `CsvDownloadButton` next to `toggle_grid_vertical_btn` when `imagesList.any { it.isGenerated }`.
-  - `CsvExportModal`: Renders Adobe Stock and Shutterstock cards, selection state, and "Save Csv" action.
-  - `FullImageCard`: Insert `Categories` `OutlinedTextField` between Description and Keywords.
-- `MainViewModel.kt`:
-  - `updateIndividualCategories(id: Int, categories: String)`
-  - `exportCsv(agency: CsvAgency)`: Builds RFC 4180 CSV string, converts to UTF-8 bytes, and invokes `FileHelper.saveBytesToDownloads`.
+### Automated Build & Compilation
+- Jalankan `compile_applet` untuk memverifikasi bahwa perubahan kode di `MainActivity.kt` dan `MainViewModel.kt` berhasil dikompilasi tanpa error.
+
+### Manual / Scenario Verifications
+1. **Verifikasi Tampilan UI:**
+   - Buka halaman Settings / War Engine.
+   - Pastikan switch `Auto Rename :` muncul tepat di bawah `Auto Inject Metadata :` dengan style yang rapi dan konsisten, tanpa caption tambahan.
+2. **Verifikasi State Default & Persistensi:**
+   - Buka aplikasi pertama kali -> switch berada pada posisi ON.
+   - Ubah switch ke OFF -> tutup dan buka kembali -> switch tetap OFF.
+3. **Verifikasi Saat Auto Rename ON:**
+   - Generate metadata & inject -> nama file berubah sesuai filename hasil AI.
+   - Ekspor CSV -> nama file di kolom CSV menggunakan filename hasil generate AI.
+4. **Verifikasi Saat Auto Rename OFF:**
+   - Generate metadata & inject -> nama file tetap menggunakan nama asli.
+   - Download file -> berkas tersimpan dengan nama asli.
+   - Ekspor CSV -> kolom filename di file CSV menggunakan nama file asli.

@@ -219,6 +219,7 @@ fun MainScreen(
     val savedBlacklistWords by viewModel.savedBlacklistWords.collectAsStateWithLifecycle()
     val savedPromptConcept by viewModel.savedPromptConcept.collectAsStateWithLifecycle()
     val isAutoInjectionEnabled by viewModel.isAutoInjectionEnabled.collectAsStateWithLifecycle()
+    val isAutoRenameEnabled by viewModel.isAutoRenameEnabled.collectAsStateWithLifecycle()
 
     val blacklistSaveColor = when {
         blacklistWords.isBlank() -> Color(0xFF9CA3AF)
@@ -406,11 +407,13 @@ fun MainScreen(
             )
         }
 
+        val hasSvgFiles = imagesList.any { it.name.endsWith(".svg", ignoreCase = true) }
         if (showCsvExportDialog) {
             CsvExportDialog(
+                hasSvgFiles = hasSvgFiles,
                 onDismiss = { showCsvExportDialog = false },
-                onSave = { target ->
-                    viewModel.exportCsv(target)
+                onSave = { target, vectorFormat ->
+                    viewModel.exportCsv(target, vectorFormat)
                     showCsvExportDialog = false
                 }
             )
@@ -2339,6 +2342,7 @@ fun AutoMetadataSettingsScreen(
     val promptConcept by viewModel.promptConcept.collectAsStateWithLifecycle()
     val savedPromptConcept by viewModel.savedPromptConcept.collectAsStateWithLifecycle()
     val isAutoInjectionEnabled by viewModel.isAutoInjectionEnabled.collectAsStateWithLifecycle()
+    val isAutoRenameEnabled by viewModel.isAutoRenameEnabled.collectAsStateWithLifecycle()
 
     val blacklistSaveColor = when {
         blacklistWords.isBlank() -> Color(0xFF64748B)
@@ -2973,6 +2977,39 @@ fun AutoMetadataSettingsScreen(
                                 checked = isAutoInjectionEnabled,
                                 onCheckedChange = { viewModel.setAutoInjectionEnabled(it) },
                                 modifier = Modifier.testTag("auto_injection_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF00A8FF),
+                                    uncheckedThumbColor = Color.White,
+                                    uncheckedTrackColor = Color(0xFF475569)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Auto Rename Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0F172A).copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                                .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                .testTag("auto_rename_row"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Auto Rename :",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f).padding(end = 8.dp)
+                            )
+                            Switch(
+                                checked = isAutoRenameEnabled,
+                                onCheckedChange = { viewModel.setAutoRenameEnabled(it) },
+                                modifier = Modifier.testTag("auto_rename_switch"),
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = Color.White,
                                     checkedTrackColor = Color(0xFF00A8FF),
@@ -4204,10 +4241,12 @@ fun SvgExportDialog(
 
 @Composable
 fun CsvExportDialog(
+    hasSvgFiles: Boolean,
     onDismiss: () -> Unit,
-    onSave: (MicrostockCsvTarget) -> Unit
+    onSave: (MicrostockCsvTarget, VectorCsvFormat) -> Unit
 ) {
     var selectedTarget by remember { mutableStateOf(MicrostockCsvTarget.ADOBESTOCK) }
+    var selectedVectorFormat by remember { mutableStateOf(VectorCsvFormat.SVG) }
 
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -4250,7 +4289,7 @@ fun CsvExportDialog(
                             fontSize = 16.sp
                         )
                         Text(
-                            text = "Pilih platform Microstock:",
+                            text = "Ekspor metadata untuk Microstock",
                             color = Color(0xFF94A3B8),
                             fontSize = 12.sp
                         )
@@ -4259,43 +4298,113 @@ fun CsvExportDialog(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Microstock selection cards (Adobe Stock & Shutterstock)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    val targets = listOf(
-                        Pair(MicrostockCsvTarget.ADOBESTOCK, "Adobe Stock"),
-                        Pair(MicrostockCsvTarget.SHUTTERSTOCK, "Shutterstock")
-                    )
-
-                    targets.forEach { (target, label) ->
-                        val isSelected = selectedTarget == target
-                        val cardBg = if (isSelected) Color(0xFF10B981) else Color(0xFF0F1E36)
-                        val cardBorder = if (isSelected) Color(0xFF34D399) else Color(0x30FFFFFF)
-                        val textColor = if (isSelected) Color.White else Color(0xFFCBD5E1)
-
-                        Card(
-                            onClick = { selectedTarget = target },
-                            shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(containerColor = cardBg),
-                            border = BorderStroke(1.dp, cardBorder),
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .testTag("csv_target_${target.name.lowercase()}")
+                // Format File (SVG / EPS) - Khusus jika file SVG diupload
+                if (hasSvgFiles) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.Start
+                    ) {
+                        Text(
+                            text = "Pilihan Format File (Vector):",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
+                            val vectorFormats = listOf(
+                                Pair(VectorCsvFormat.SVG, "SVG"),
+                                Pair(VectorCsvFormat.EPS, "EPS")
+                            )
+
+                            vectorFormats.forEach { (format, label) ->
+                                val isSelected = selectedVectorFormat == format
+                                val cardBg = if (isSelected) Color(0xFF00A8FF) else Color(0xFF0F1E36)
+                                val cardBorder = if (isSelected) Color(0xFF38BDF8) else Color(0x30FFFFFF)
+                                val textColor = if (isSelected) Color.White else Color(0xFFCBD5E1)
+
+                                Card(
+                                    onClick = { selectedVectorFormat = format },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                                    border = BorderStroke(1.dp, cardBorder),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(44.dp)
+                                        .testTag("csv_vector_format_${format.name.lowercase()}")
+                                ) {
+                                    Box(
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            color = textColor,
+                                            fontSize = 13.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Microstock selection cards (Adobe Stock & Shutterstock)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Text(
+                        text = "Pilih platform Microstock:",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        val targets = listOf(
+                            Pair(MicrostockCsvTarget.ADOBESTOCK, "Adobe Stock"),
+                            Pair(MicrostockCsvTarget.SHUTTERSTOCK, "Shutterstock")
+                        )
+
+                        targets.forEach { (target, label) ->
+                            val isSelected = selectedTarget == target
+                            val cardBg = if (isSelected) Color(0xFF10B981) else Color(0xFF0F1E36)
+                            val cardBorder = if (isSelected) Color(0xFF34D399) else Color(0x30FFFFFF)
+                            val textColor = if (isSelected) Color.White else Color(0xFFCBD5E1)
+
+                            Card(
+                                onClick = { selectedTarget = target },
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(containerColor = cardBg),
+                                border = BorderStroke(1.dp, cardBorder),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("csv_target_${target.name.lowercase()}")
                             ) {
-                                Text(
-                                    text = label,
-                                    color = textColor,
-                                    fontSize = 12.5.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center
-                                )
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = label,
+                                        color = textColor,
+                                        fontSize = 12.5.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }
@@ -4310,17 +4419,31 @@ fun CsvExportDialog(
                     border = BorderStroke(1.dp, Color(0x20FFFFFF)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = if (selectedTarget == MicrostockCsvTarget.ADOBESTOCK) {
-                            "Struktur Kolom: Filename, Title, Keywords, Category"
-                        } else {
-                            "Struktur Kolom: Filename, Description, Keywords, Categories"
-                        },
-                        color = Color(0xFF38BDF8),
-                        fontSize = 11.5.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
-                    )
+                    Column(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        if (hasSvgFiles) {
+                            Text(
+                                text = "Format Filename Vector: .${selectedVectorFormat.name.lowercase()}",
+                                color = Color(0xFF38BDF8),
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                        }
+                        Text(
+                            text = if (selectedTarget == MicrostockCsvTarget.ADOBESTOCK) {
+                                "Struktur: Filename, Title, Keywords, Category (Maks 1)"
+                            } else {
+                                "Struktur: Filename, Description, Keywords, Categories (Maks 2)"
+                            },
+                            color = Color(0xFFCBD5E1),
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(20.dp))
@@ -4339,7 +4462,7 @@ fun CsvExportDialog(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
-                        onClick = { onSave(selectedTarget) },
+                        onClick = { onSave(selectedTarget, selectedVectorFormat) },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00A8FF)),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.testTag("save_csv_btn")

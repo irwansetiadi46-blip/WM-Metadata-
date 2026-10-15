@@ -1,6 +1,6 @@
 {
-  "summary": "Implementation plan for adding the Download CSV feature with Adobe Stock and Shutterstock metadata export formats, Categories field in metadata output and Gemini schema, and interactive selection modal.",
-  "updatedAt": "2026-10-14T14:41:24.858971411Z",
+  "summary": "Rencana implementasi penambahan fitur toggle Auto Rename dengan Switch button di bawah Auto Inject Metadata, penyimpanan preferensi (default ON), kontrol proses rename file saat injeksi/ekspor, serta penamaan file asli pada ekspor CSV saat Auto Rename OFF.",
+  "updatedAt": "2026-10-15T12:25:37.976998920Z",
   "requestFeedback": true,
   "userFacing": true
 }
