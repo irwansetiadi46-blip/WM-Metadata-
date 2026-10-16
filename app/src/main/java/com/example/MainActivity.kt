@@ -307,6 +307,19 @@ fun MainScreen(
         }
     }
 
+    // Notification permission launcher for Android 13+ (Tiramisu)
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
+
     fun requestAndPickImages() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pickerLauncher.launch("*/*")
@@ -2343,6 +2356,7 @@ fun AutoMetadataSettingsScreen(
     val savedPromptConcept by viewModel.savedPromptConcept.collectAsStateWithLifecycle()
     val isAutoInjectionEnabled by viewModel.isAutoInjectionEnabled.collectAsStateWithLifecycle()
     val isAutoRenameEnabled by viewModel.isAutoRenameEnabled.collectAsStateWithLifecycle()
+    val isAutoDownloadEnabled by viewModel.isAutoDownloadEnabled.collectAsStateWithLifecycle()
 
     val blacklistSaveColor = when {
         blacklistWords.isBlank() -> Color(0xFF64748B)
@@ -3010,6 +3024,39 @@ fun AutoMetadataSettingsScreen(
                                 checked = isAutoRenameEnabled,
                                 onCheckedChange = { viewModel.setAutoRenameEnabled(it) },
                                 modifier = Modifier.testTag("auto_rename_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF00A8FF),
+                                    uncheckedThumbColor = Color.White,
+                                    uncheckedTrackColor = Color(0xFF475569)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Auto Download Row
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0F172A).copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                                .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                .testTag("auto_download_row"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Auto Download :",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                modifier = Modifier.weight(1f).padding(end = 8.dp)
+                            )
+                            Switch(
+                                checked = isAutoDownloadEnabled,
+                                onCheckedChange = { viewModel.setAutoDownloadEnabled(it) },
+                                modifier = Modifier.testTag("auto_download_switch"),
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = Color.White,
                                     checkedTrackColor = Color(0xFF00A8FF),

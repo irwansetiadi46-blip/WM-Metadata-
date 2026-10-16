@@ -272,6 +272,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isAutoRenameEnabled = MutableStateFlow(true)
     val isAutoRenameEnabled = _isAutoRenameEnabled.asStateFlow()
 
+    private val _isAutoDownloadEnabled = MutableStateFlow(false)
+    val isAutoDownloadEnabled = _isAutoDownloadEnabled.asStateFlow()
+
     // --- Loading & Injection Progress State ---
     private val _isGeneratingAi = MutableStateFlow(false)
     val isGeneratingAi = _isGeneratingAi.asStateFlow()
@@ -453,6 +456,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // Auto-load Auto Rename preference (Default ON)
         _isAutoRenameEnabled.value = prefs.getBoolean("is_auto_rename", true)
+
+        // Auto-load Auto Download preference (Default OFF)
+        _isAutoDownloadEnabled.value = prefs.getBoolean("is_auto_download", false)
 
         // Auto-load Touch Effect preferences (Default ON, Glowing Ring)
         _isTouchEffectEnabled.value = prefs.getBoolean("is_touch_effect_enabled", true)
@@ -695,6 +701,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else item
             }
         }
+    }
+
+    fun setAutoDownloadEnabled(enabled: Boolean) {
+        _isAutoDownloadEnabled.value = enabled
+        val prefs = context.getSharedPreferences("WarMachinePrefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("is_auto_download", enabled).apply()
     }
 
     fun setTitleCharLimit(value: Float) {
@@ -1012,6 +1024,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isGeneratingAi.value = false
         _isGlobalProcessing.value = false
         _globalProcessingText.value = ""
+        MetadataProcessingService.stop(context)
 
         // Reset list and form metadata
         _imagesList.value = emptyList()
@@ -1113,6 +1126,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isGeneratingAi.value = false
         _isGlobalProcessing.value = false
         _globalProcessingText.value = ""
+        MetadataProcessingService.stop(context)
         _imagesList.value = _imagesList.value.map {
             when (it.processStatus) {
                 ProcessStatus.PROCESSING -> it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED)
@@ -1132,6 +1146,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isGeneratingAi.value = false
             _isGlobalProcessing.value = false
             _globalProcessingText.value = ""
+            MetadataProcessingService.stop(context)
             _imagesList.value = _imagesList.value.map {
                 if (it.id == id) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED)
                 else if (it.processStatus == ProcessStatus.WAITING) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.IDLE)
@@ -1139,6 +1154,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _toastFlow.value = "Canceled"
             return
+        }
+        if (individualGenerationJobs.isEmpty() && currentBatchProcessingId == null) {
+            MetadataProcessingService.stop(context)
         }
         _imagesList.value = _imagesList.value.map {
             if (it.id == id) {
@@ -1312,78 +1330,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val imageItem = _imagesList.value.find { it.id == id } ?: return
 
         val job = viewModelScope.launch {
-            _imagesList.value = _imagesList.value.map { 
-                if (it.id == imageItem.id) it.copy(isGeneratingMetadata = true, processStatus = ProcessStatus.PROCESSING) else it 
-            }
-
-            val maxAttempts = if (_isMultiApiEnabled.value && _apiKeysList.value.size > 1) _apiKeysList.value.size else 1
-            var attempt = 0
-            var success = false
-
-            while (!success && attempt < maxAttempts) {
-                val currentKey = _geminiKey.value
-                if (currentKey.isBlank()) {
-                    _toastFlow.value = "Need API Key"
-                    _imagesList.value = _imagesList.value.map { 
-                        if (it.id == imageItem.id) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED) else it 
-                    }
-                    break
+            MetadataProcessingService.start(context, "Generating metadata for ${imageItem.name}...")
+            try {
+                _imagesList.value = _imagesList.value.map { 
+                    if (it.id == imageItem.id) it.copy(isGeneratingMetadata = true, processStatus = ProcessStatus.PROCESSING) else it 
                 }
-                try {
-                    val parsed = performGeminiAnalysis(imageItem, currentKey, _selectedModel.value)
-                    if (parsed != null) {
-                        val kwsList = parsed.keywords ?: emptyList()
-                        val kwsString = kwsList.joinToString(",") { 
-                            if (it.isTrademark && !it.replacement.isNullOrBlank()) it.replacement else it.word 
-                        }
 
-                        _fileName.value = parsed.fileName ?: ""
-                        _title.value = parsed.title ?: ""
-                        _description.value = parsed.description ?: ""
-                        _categories.value = parsed.categories ?: ""
-                        _keywords.value = kwsString
+                val maxAttempts = if (_isMultiApiEnabled.value && _apiKeysList.value.size > 1) _apiKeysList.value.size else 1
+                var attempt = 0
+                var success = false
 
-                        _imagesList.value = _imagesList.value.map { 
-                            if (it.id == imageItem.id) it.copy(
-                                individualFileName = parsed.fileName ?: "",
-                                individualTitle = parsed.title ?: "",
-                                individualDescription = parsed.description ?: "",
-                                individualCategories = parsed.categories ?: "",
-                                individualKeywords = kwsString,
-                                individualKeywordItems = kwsList,
-                                isGeneratingMetadata = false,
-                                processStatus = ProcessStatus.SUCCESS
-                            ) else it
-                        }
-                        _toastFlow.value = "Generated"
-                        if (_isAutoInjectionEnabled.value) {
-                            injectIndividualMetadata(imageItem.id)
-                        }
-                        success = true
-                    } else {
-                        throw Exception("Invalid AI response")
-                    }
-                } catch (e: Exception) {
-                    if (e is kotlinx.coroutines.CancellationException) {
+                while (!success && attempt < maxAttempts) {
+                    val currentKey = _geminiKey.value
+                    if (currentKey.isBlank()) {
+                        _toastFlow.value = "Need API Key"
                         _imagesList.value = _imagesList.value.map { 
                             if (it.id == imageItem.id) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED) else it 
                         }
                         break
                     }
-                    attempt++
-                    if (_isMultiApiEnabled.value && attempt < maxAttempts && switchToNextApiKey()) {
-                        kotlinx.coroutines.delay(600)
-                    } else {
-                        e.printStackTrace()
-                        _imagesList.value = _imagesList.value.map { 
-                            if (it.id == imageItem.id) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED) else it 
+
+                    try {
+                        val parsed = performGeminiAnalysis(imageItem, currentKey, _selectedModel.value)
+                        if (parsed != null) {
+                            val kwsList = parsed.keywords ?: emptyList()
+                            val kwsString = kwsList.joinToString(",") { 
+                                if (it.isTrademark && !it.replacement.isNullOrBlank()) it.replacement else it.word 
+                            }
+
+                            _fileName.value = parsed.fileName ?: ""
+                            _title.value = parsed.title ?: ""
+                            _description.value = parsed.description ?: ""
+                            _categories.value = parsed.categories ?: ""
+                            _keywords.value = kwsString
+
+                            _imagesList.value = _imagesList.value.map { 
+                                if (it.id == imageItem.id) it.copy(
+                                    individualFileName = parsed.fileName ?: "",
+                                    individualTitle = parsed.title ?: "",
+                                    individualDescription = parsed.description ?: "",
+                                    individualCategories = parsed.categories ?: "",
+                                    individualKeywords = kwsString,
+                                    individualKeywordItems = kwsList,
+                                    isGeneratingMetadata = false,
+                                    processStatus = ProcessStatus.SUCCESS
+                                ) else it
+                            }
+                            _toastFlow.value = "Generated"
+                            if (_isAutoInjectionEnabled.value) {
+                                injectIndividualMetadata(imageItem.id, autoDownload = _isAutoDownloadEnabled.value)
+                            } else if (_isAutoDownloadEnabled.value) {
+                                autoDownloadIndividualItem(imageItem.id)
+                            }
+                            success = true
+                        } else {
+                            throw Exception("Invalid AI response")
                         }
-                        _toastFlow.value = "AI Error"
-                        break
+                    } catch (e: Exception) {
+                        if (e is kotlinx.coroutines.CancellationException) {
+                            _imagesList.value = _imagesList.value.map { 
+                                if (it.id == imageItem.id) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED) else it 
+                            }
+                            break
+                        }
+                        attempt++
+                        if (_isMultiApiEnabled.value && attempt < maxAttempts && switchToNextApiKey()) {
+                            kotlinx.coroutines.delay(600)
+                        } else {
+                            e.printStackTrace()
+                            _imagesList.value = _imagesList.value.map { 
+                                if (it.id == imageItem.id) it.copy(isGeneratingMetadata = false, processStatus = ProcessStatus.FAILED) else it 
+                            }
+                            _toastFlow.value = "AI Error"
+                            break
+                        }
                     }
                 }
+            } finally {
+                individualGenerationJobs.remove(imageItem.id)
+                if (individualGenerationJobs.isEmpty() && currentBatchProcessingId == null) {
+                    MetadataProcessingService.stop(context)
+                }
             }
-            individualGenerationJobs.remove(imageItem.id)
         }
         individualGenerationJobs[imageItem.id] = job
     }
@@ -1430,12 +1458,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         globalGenerationJob = viewModelScope.launch {
             _isGeneratingAi.value = true
             _isGlobalProcessing.value = true
+            MetadataProcessingService.start(context, "Generating metadata (0/${targetImages.size})...")
             try {
                 val total = targetImages.size
                 var completed = 0
                 for (imageItem in targetImages) {
                     currentBatchProcessingId = imageItem.id
                     _globalProcessingText.value = "Generating Process...($completed/$total)"
+                    MetadataProcessingService.updateProgress(context, "Generating metadata ($completed/$total)...")
 
                     _imagesList.value = _imagesList.value.map { 
                         if (it.id == imageItem.id) it.copy(isGeneratingMetadata = true, processStatus = ProcessStatus.PROCESSING) else it 
@@ -1486,7 +1516,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                                 // Langsung Auto Inject Metadata jika fitur auto injection ON
                                 if (_isAutoInjectionEnabled.value) {
-                                    injectIndividualMetadata(imageItem.id)
+                                    injectIndividualMetadata(imageItem.id, autoDownload = _isAutoDownloadEnabled.value)
+                                } else if (_isAutoDownloadEnabled.value) {
+                                    autoDownloadIndividualItem(imageItem.id)
                                 }
                                 itemSuccess = true
                                 completed++
@@ -1515,6 +1547,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     _globalProcessingText.value = "Generating Process...($completed/$total)"
+                    MetadataProcessingService.updateProgress(context, "Generating metadata ($completed/$total)...")
                 }
                 
                 _toastFlow.value = "Generated"
@@ -1525,6 +1558,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _toastFlow.value = "AI Error"
                 }
             } finally {
+                MetadataProcessingService.stop(context)
                 currentBatchProcessingId = null
                 _isGeneratingAi.value = false
                 _isGlobalProcessing.value = false
@@ -1986,7 +2020,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun injectIndividualMetadata(id: Int) {
+    fun injectIndividualMetadata(id: Int, autoDownload: Boolean = false) {
         val item = _imagesList.value.find { it.id == id } ?: return
         
         val metaFileName = item.individualFileName.trim()
@@ -2048,6 +2082,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             isInjectingIndividual = false
                         ) else it 
                     }
+
+                    if (autoDownload || _isAutoDownloadEnabled.value) {
+                        withContext(Dispatchers.IO) {
+                            try {
+                                val isSvg = item.name.endsWith(".svg", ignoreCase = true) || item.originalName.endsWith(".svg", ignoreCase = true)
+                                val isEps = item.name.endsWith(".eps", ignoreCase = true) || item.originalName.endsWith(".eps", ignoreCase = true)
+                                val mimeType = when {
+                                    isSvg -> "image/svg+xml"
+                                    isEps -> "application/postscript"
+                                    newFileName.endsWith(".png", true) -> "image/png"
+                                    else -> "image/jpeg"
+                                }
+                                FileHelper.saveToDownloads(context, newFileName, mimeType, injectedBytes)
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                    }
+
                     _toastFlow.value = "Injected"
                 } else {
                     _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = false) else it }
@@ -2057,6 +2110,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 e.printStackTrace()
                 _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = false) else it }
                 _toastFlow.value = "Inject Failed"
+            }
+        }
+    }
+
+    fun autoDownloadIndividualItem(id: Int) {
+        val item = _imagesList.value.find { it.id == id } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val baseBytes = item.injectedBytes ?: item.originalBytes ?: FileHelper.readBytesFromUri(context, item.uri)
+                if (baseBytes == null) return@launch
+
+                val metaTitle = item.individualTitle.ifBlank { item.metadata?.title?.trim() ?: "" }
+                val metaDesc = item.individualDescription.ifBlank { item.metadata?.description?.trim() ?: "" }
+                val metaKeywordsStr = item.individualKeywords.ifBlank { item.metadata?.keywords ?: "" }
+                val keywordsList = if (item.individualKeywordItems.isNotEmpty()) {
+                    item.individualKeywordItems.map { it.word.trim() }.filter { it.isNotEmpty() }
+                } else {
+                    metaKeywordsStr.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                }
+                val metaCreator = item.individualCreator.ifBlank { item.metadata?.creator?.trim() ?: "WarMachineHybrid" }
+
+                val dotIndex = item.name.lastIndexOf('.')
+                val baseName = getEffectiveBaseName(item)
+                val isSvg = item.name.endsWith(".svg", ignoreCase = true) || item.originalName.endsWith(".svg", ignoreCase = true)
+                val isEps = item.name.endsWith(".eps", ignoreCase = true) || item.originalName.endsWith(".eps", ignoreCase = true)
+
+                if (isSvg) {
+                    val svgBytes = XmpInjector.injectIntoSvg(baseBytes, metaTitle, metaDesc, keywordsList)
+                    val fileName = "$baseName.svg"
+                    FileHelper.saveToDownloads(context, fileName, "image/svg+xml", svgBytes)
+                } else {
+                    val ext = if (!_isAutoRenameEnabled.value) {
+                        if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (isEps) ".eps" else ".jpg"
+                    } else {
+                        if (dotIndex != -1) item.name.substring(dotIndex) else if (isEps) ".eps" else ".jpg"
+                    }
+                    val fileName = "$baseName$ext"
+                    val mimeType = when {
+                        ext.endsWith(".png", true) -> "image/png"
+                        ext.endsWith(".eps", true) -> "application/postscript"
+                        else -> "image/jpeg"
+                    }
+                    val finalBytes = if (isEps) {
+                        item.injectedBytes ?: XmpInjector.injectIntoEps(baseBytes, metaTitle, metaDesc, keywordsList, metaCreator)
+                    } else {
+                        item.injectedBytes ?: baseBytes
+                    }
+                    FileHelper.saveToDownloads(context, fileName, mimeType, finalBytes)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
