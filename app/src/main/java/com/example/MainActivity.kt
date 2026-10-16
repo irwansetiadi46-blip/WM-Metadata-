@@ -220,6 +220,7 @@ fun MainScreen(
     val savedPromptConcept by viewModel.savedPromptConcept.collectAsStateWithLifecycle()
     val isAutoInjectionEnabled by viewModel.isAutoInjectionEnabled.collectAsStateWithLifecycle()
     val isAutoRenameEnabled by viewModel.isAutoRenameEnabled.collectAsStateWithLifecycle()
+    val isSaveOverwriteEnabled by viewModel.isSaveOverwriteEnabled.collectAsStateWithLifecycle()
 
     val blacklistSaveColor = when {
         blacklistWords.isBlank() -> Color(0xFF9CA3AF)
@@ -1333,17 +1334,22 @@ fun MainScreen(
                         }
                     }
 
-                    // Button 2: Download All (Frosted Azure Glass)
+                    // Button 2: Download All (Frosted Azure Glass / Disabled Grey when Save Overwrite is ON)
                     val downloadAllBtnInteractionSource = remember { MutableInteractionSource() }
+                    val isDownloadAllDisabled = isDownloading || isSaveOverwriteEnabled
                     Surface(
                         shape = subBtnShape,
-                        shadowElevation = 4.dp,
+                        shadowElevation = if (isSaveOverwriteEnabled) 0.dp else 4.dp,
                         color = Color.Transparent,
                         border = BorderStroke(
                             width = 1.dp,
-                            brush = Brush.verticalGradient(
-                                listOf(Color(0x9038BDF8), Color(0x350284C7))
-                            )
+                            brush = if (isSaveOverwriteEnabled) {
+                                Brush.linearGradient(listOf(Color(0xFF475569), Color(0xFF475569)))
+                            } else {
+                                Brush.verticalGradient(
+                                    listOf(Color(0x9038BDF8), Color(0x350284C7))
+                                )
+                            }
                         ),
                         modifier = Modifier
                             .weight(1f)
@@ -1356,12 +1362,18 @@ fun MainScreen(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(
-                                    Brush.verticalGradient(
-                                        listOf(Color(0xE60284C7), Color(0xCC0369A1))
-                                    )
+                                    if (isSaveOverwriteEnabled) {
+                                        Brush.verticalGradient(
+                                            listOf(Color(0xFF334155), Color(0xFF1E293B))
+                                        )
+                                    } else {
+                                        Brush.verticalGradient(
+                                            listOf(Color(0xE60284C7), Color(0xCC0369A1))
+                                        )
+                                    }
                                 )
                                 .clickable(
-                                    enabled = !isDownloading,
+                                    enabled = !isDownloadAllDisabled,
                                     interactionSource = downloadAllBtnInteractionSource,
                                     indication = null
                                 ) {
@@ -1394,13 +1406,13 @@ fun MainScreen(
                                     Icon(
                                         imageVector = Icons.Default.Download,
                                         contentDescription = "Download All",
-                                        tint = Color.White,
+                                        tint = if (isSaveOverwriteEnabled) Color(0xFF94A3B8) else Color.White,
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(5.dp))
                                     Text(
                                         text = "Download All",
-                                        color = Color.White,
+                                        color = if (isSaveOverwriteEnabled) Color(0xFF94A3B8) else Color.White,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 11.5.sp
                                     )
@@ -2357,6 +2369,7 @@ fun AutoMetadataSettingsScreen(
     val isAutoInjectionEnabled by viewModel.isAutoInjectionEnabled.collectAsStateWithLifecycle()
     val isAutoRenameEnabled by viewModel.isAutoRenameEnabled.collectAsStateWithLifecycle()
     val isAutoDownloadEnabled by viewModel.isAutoDownloadEnabled.collectAsStateWithLifecycle()
+    val isSaveOverwriteEnabled by viewModel.isSaveOverwriteEnabled.collectAsStateWithLifecycle()
 
     val blacklistSaveColor = when {
         blacklistWords.isBlank() -> Color(0xFF64748B)
@@ -3050,13 +3063,57 @@ fun AutoMetadataSettingsScreen(
                                 text = "Auto Download :",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White,
+                                color = if (isSaveOverwriteEnabled) Color(0xFF64748B) else Color.White,
                                 modifier = Modifier.weight(1f).padding(end = 8.dp)
                             )
                             Switch(
-                                checked = isAutoDownloadEnabled,
+                                checked = isAutoDownloadEnabled && !isSaveOverwriteEnabled,
+                                enabled = !isSaveOverwriteEnabled,
                                 onCheckedChange = { viewModel.setAutoDownloadEnabled(it) },
                                 modifier = Modifier.testTag("auto_download_switch"),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color.White,
+                                    checkedTrackColor = Color(0xFF00A8FF),
+                                    uncheckedThumbColor = Color.White,
+                                    uncheckedTrackColor = Color(0xFF475569),
+                                    disabledCheckedThumbColor = Color(0xFF94A3B8),
+                                    disabledCheckedTrackColor = Color(0xFF334155),
+                                    disabledUncheckedThumbColor = Color(0xFF64748B),
+                                    disabledUncheckedTrackColor = Color(0xFF1E293B)
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Save Overwrite Row (Posisi di bawah Auto Download)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF0F172A).copy(alpha = 0.6f), RoundedCornerShape(10.dp))
+                                .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 14.dp, vertical = 8.dp)
+                                .testTag("save_overwrite_row"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(
+                                    text = "Save Overwrite :",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Update file asli di tempat tanpa file ganda",
+                                    fontSize = 10.5.sp,
+                                    color = Color(0xFF94A3B8)
+                                )
+                            }
+                            Switch(
+                                checked = isSaveOverwriteEnabled,
+                                onCheckedChange = { viewModel.setSaveOverwriteEnabled(it) },
+                                modifier = Modifier.testTag("save_overwrite_switch"),
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = Color.White,
                                     checkedTrackColor = Color(0xFF00A8FF),
@@ -5196,6 +5253,7 @@ fun FullImageCard(
     val isPng = item.name.endsWith(".png", ignoreCase = true)
     val isEps = item.name.endsWith(".eps", ignoreCase = true)
     val isSvg = item.name.endsWith(".svg", ignoreCase = true)
+    val isSaveOverwriteEnabled by viewModel.isSaveOverwriteEnabled.collectAsStateWithLifecycle()
 
     Card(
         modifier = Modifier
@@ -5395,24 +5453,33 @@ fun FullImageCard(
                     }
                 }
 
-                // Download Button
+                // Download Button (Disabled and Grey if Save Overwrite is ON)
+                val isSingleDownloadDisabled = isSaveOverwriteEnabled || !item.hasMetadata
                 val singleDownloadInteraction = remember { MutableInteractionSource() }
                 Box(
                     modifier = Modifier
                         .size(36.dp)
                         .popUpBounce(singleDownloadInteraction, scaleUp = 1.10f, scaleDown = 0.92f)
                         .background(
-                            if (item.hasMetadata) Color(0xFF00A8FF).copy(alpha = 0.15f) else Color.Transparent,
+                            when {
+                                isSaveOverwriteEnabled -> Color(0xFF1E293B).copy(alpha = 0.5f)
+                                item.hasMetadata -> Color(0xFF00A8FF).copy(alpha = 0.15f)
+                                else -> Color.Transparent
+                            },
                             RoundedCornerShape(8.dp)
                         )
                         .border(
                             1.dp,
-                            if (item.hasMetadata) Color(0xFF00A8FF) else Color(0x33FFFFFF),
+                            when {
+                                isSaveOverwriteEnabled -> Color(0xFF475569).copy(alpha = 0.6f)
+                                item.hasMetadata -> Color(0xFF00A8FF)
+                                else -> Color(0x33FFFFFF)
+                            },
                             RoundedCornerShape(8.dp)
                         )
                         .clip(RoundedCornerShape(8.dp))
                         .clickable(
-                            enabled = item.hasMetadata,
+                            enabled = !isSingleDownloadDisabled,
                             interactionSource = singleDownloadInteraction,
                             indication = null
                         ) { viewModel.downloadIndividualFile(item.id) },
@@ -5421,7 +5488,11 @@ fun FullImageCard(
                     Icon(
                         imageVector = Icons.Default.Download,
                         contentDescription = "Download File",
-                        tint = if (item.hasMetadata) Color(0xFF00A8FF) else Color(0xFF64748B),
+                        tint = when {
+                            isSaveOverwriteEnabled -> Color(0xFF64748B)
+                            item.hasMetadata -> Color(0xFF00A8FF)
+                            else -> Color(0xFF64748B)
+                        },
                         modifier = Modifier.size(18.dp)
                     )
                 }

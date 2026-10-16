@@ -275,6 +275,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isAutoDownloadEnabled = MutableStateFlow(false)
     val isAutoDownloadEnabled = _isAutoDownloadEnabled.asStateFlow()
 
+    private val _isSaveOverwriteEnabled = MutableStateFlow(false)
+    val isSaveOverwriteEnabled = _isSaveOverwriteEnabled.asStateFlow()
+
     // --- Loading & Injection Progress State ---
     private val _isGeneratingAi = MutableStateFlow(false)
     val isGeneratingAi = _isGeneratingAi.asStateFlow()
@@ -459,6 +462,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // Auto-load Auto Download preference (Default OFF)
         _isAutoDownloadEnabled.value = prefs.getBoolean("is_auto_download", false)
+
+        // Auto-load Save Overwrite preference (Default OFF)
+        _isSaveOverwriteEnabled.value = prefs.getBoolean("is_save_overwrite", false)
+        if (_isSaveOverwriteEnabled.value) {
+            _isAutoDownloadEnabled.value = false
+        }
 
         // Auto-load Touch Effect preferences (Default ON, Glowing Ring)
         _isTouchEffectEnabled.value = prefs.getBoolean("is_touch_effect_enabled", true)
@@ -704,9 +713,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setAutoDownloadEnabled(enabled: Boolean) {
+        if (_isSaveOverwriteEnabled.value && enabled) return
         _isAutoDownloadEnabled.value = enabled
         val prefs = context.getSharedPreferences("WarMachinePrefs", Context.MODE_PRIVATE)
         prefs.edit().putBoolean("is_auto_download", enabled).apply()
+    }
+
+    fun setSaveOverwriteEnabled(enabled: Boolean) {
+        _isSaveOverwriteEnabled.value = enabled
+        val prefs = context.getSharedPreferences("WarMachinePrefs", Context.MODE_PRIVATE)
+        val editor = prefs.edit().putBoolean("is_save_overwrite", enabled)
+        if (enabled) {
+            _isAutoDownloadEnabled.value = false
+            editor.putBoolean("is_auto_download", false)
+        }
+        editor.apply()
     }
 
     fun setTitleCharLimit(value: Float) {
@@ -2073,17 +2094,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         creator = metaCreator
                     )
 
+                    if (_isSaveOverwriteEnabled.value) {
+                        withContext(Dispatchers.IO) {
+                            FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
+                        }
+                    }
+
                     _imagesList.value = _imagesList.value.map { 
                         if (it.id == id) it.copy(
                             name = newFileName,
                             injectedBytes = injectedBytes,
+                            originalBytes = if (_isSaveOverwriteEnabled.value) injectedBytes else it.originalBytes,
                             hasMetadata = true,
                             metadata = newestXmpData,
                             isInjectingIndividual = false
                         ) else it 
                     }
 
-                    if (autoDownload || _isAutoDownloadEnabled.value) {
+                    if ((autoDownload || _isAutoDownloadEnabled.value) && !_isSaveOverwriteEnabled.value) {
                         withContext(Dispatchers.IO) {
                             try {
                                 val isSvg = item.name.endsWith(".svg", ignoreCase = true) || item.originalName.endsWith(".svg", ignoreCase = true)
@@ -2101,7 +2129,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    _toastFlow.value = "Injected"
+                    _toastFlow.value = if (_isSaveOverwriteEnabled.value) "Injected & Overwritten" else "Injected"
                 } else {
                     _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = false) else it }
                     _toastFlow.value = "File Error"
@@ -2115,6 +2143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun autoDownloadIndividualItem(id: Int) {
+        if (_isSaveOverwriteEnabled.value) return
         val item = _imagesList.value.find { it.id == id } ?: return
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -2230,11 +2259,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 creator = metaCreator
                             )
 
+                            if (_isSaveOverwriteEnabled.value) {
+                                withContext(Dispatchers.IO) {
+                                    FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
+                                }
+                            }
+
                             val indexInMaster = updatedList.indexOfFirst { it.id == item.id }
                             if (indexInMaster != -1) {
                                 updatedList[indexInMaster] = updatedList[indexInMaster].copy(
                                     name = newFileName,
                                     injectedBytes = injectedBytes,
+                                    originalBytes = if (_isSaveOverwriteEnabled.value) injectedBytes else updatedList[indexInMaster].originalBytes,
                                     hasMetadata = true,
                                     metadata = newestXmpData
                                 )
@@ -2356,6 +2392,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 creator = metaCreator
                             )
 
+                            if (_isSaveOverwriteEnabled.value) {
+                                withContext(Dispatchers.IO) {
+                                    FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
+                                }
+                            }
+
                             // Find index of this item in the master list
                             val indexInMaster = updatedList.indexOfFirst { it.id == item.id }
                             if (indexInMaster != -1) {
@@ -2363,6 +2405,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     name = newFileName,
                                     individualFileName = if (metaFileName.isNotBlank()) metaFileName else updatedList[indexInMaster].individualFileName,
                                     injectedBytes = injectedBytes,
+                                    originalBytes = if (_isSaveOverwriteEnabled.value) injectedBytes else updatedList[indexInMaster].originalBytes,
                                     hasMetadata = true,
                                     metadata = newestXmpData
                                 )
@@ -2682,10 +2725,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- ZIP and Download ---
     fun downloadInjectedFiles() {
+        if (_isSaveOverwriteEnabled.value) {
+            _toastFlow.value = "Save Overwrite Aktif: File Asli Sudah Ter-update"
+            return
+        }
         showSvgExportDialogForBulk()
     }
 
     fun downloadIndividualFile(id: Int) {
+        if (_isSaveOverwriteEnabled.value) {
+            _toastFlow.value = "Save Overwrite Aktif: File Asli Sudah Ter-update"
+            return
+        }
         showSvgExportDialogForIndividual(id)
     }
 

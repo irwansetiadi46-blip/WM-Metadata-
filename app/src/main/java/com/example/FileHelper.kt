@@ -175,5 +175,24 @@ object FileHelper {
             out.write(bytes)
         }
     }
+
+    fun overwriteOriginalFile(context: Context, uri: Uri, bytes: ByteArray): Boolean {
+        return try {
+            val outputStream = context.contentResolver.openOutputStream(uri, "wt")
+                ?: context.contentResolver.openOutputStream(uri, "w")
+            if (outputStream != null) {
+                outputStream.use { out ->
+                    out.write(bytes)
+                    out.flush()
+                }
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
 }
 
