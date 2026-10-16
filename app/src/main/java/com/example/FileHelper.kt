@@ -25,6 +25,30 @@ object FileHelper {
         }
     }
 
+    /**
+     * Reads up to maxBytes from the start of the URI stream.
+     * Ideal for reading image/XMP headers without loading large file payloads into RAM.
+     */
+    fun readHeaderBytesFromUri(context: Context, uri: Uri, maxBytes: Int = 262144): ByteArray? {
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                val buffer = ByteArray(maxBytes)
+                var totalRead = 0
+                while (totalRead < maxBytes) {
+                    val read = inputStream.read(buffer, totalRead, maxBytes - totalRead)
+                    if (read == -1) break
+                    totalRead += read
+                }
+                if (totalRead <= 0) null
+                else if (totalRead == maxBytes) buffer
+                else buffer.copyOf(totalRead)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     fun readBase64FromUri(context: Context, uri: Uri): String? {
         return try {
             val inputStream = context.contentResolver.openInputStream(uri)

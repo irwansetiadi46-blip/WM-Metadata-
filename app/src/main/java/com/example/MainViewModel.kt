@@ -759,141 +759,163 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- Image Library Management ---
     fun addImages(uris: List<Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
-            // Backup form values
-            val backupT = _title.value
-            val backupD = _description.value
-            val backupK = _keywords.value
-            val backupC = _creator.value
+            val showLoading = uris.size > 15
+            if (showLoading) {
+                _isGlobalProcessing.value = true
+                _globalProcessingText.value = "Importing ${uris.size} files..."
+            }
+            try {
+                // Backup form values
+                val backupT = _title.value
+                val backupD = _description.value
+                val backupK = _keywords.value
+                val backupC = _creator.value
 
-            val current = _imagesList.value.toMutableList()
-            val isAllMode = _selectionMode.value == SelectionMode.ALL
+                val current = _imagesList.value.toMutableList()
+                val isAllMode = _selectionMode.value == SelectionMode.ALL
 
-            uris.forEach { uri ->
-                if (current.none { it.uri == uri }) {
-                    val name = FileHelper.getFileNameFromUri(context, uri)
-                    val nameLower = name.lowercase()
-                    
-                    // Accept Jpeg, Png, Eps, and Svg
-                    if (nameLower.endsWith(".png") || nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") || nameLower.endsWith(".eps") || nameLower.endsWith(".svg")) {
-                        val originalBytes = FileHelper.readBytesFromUri(context, uri)
-                        
-                        var hasMeta = false
-                        var meta: XmpData? = null
+                withContext(Dispatchers.IO) {
+                    uris.forEach { uri ->
+                        if (current.none { it.uri == uri }) {
+                            val name = FileHelper.getFileNameFromUri(context, uri)
+                            val nameLower = name.lowercase()
+                            
+                            // Accept Jpeg, Png, Eps, and Svg
+                            if (nameLower.endsWith(".png") || nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg") || nameLower.endsWith(".eps") || nameLower.endsWith(".svg")) {
+                                val isPng = nameLower.endsWith(".png")
+                                val isEps = nameLower.endsWith(".eps")
+                                val isSvg = nameLower.endsWith(".svg")
+                                val isJpg = nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg")
 
-                        var previewUri: Uri? = null
-                        var previewBytes: ByteArray? = null
-                        var itemAspectRatio = 1.0f
+                                var hasMeta = false
+                                var meta: XmpData? = null
+                                var previewUri: Uri? = null
+                                var itemAspectRatio = 1.0f
 
-                        if (originalBytes != null) {
-                            val isPng = nameLower.endsWith(".png")
-                            val isEps = nameLower.endsWith(".eps")
-                            val isSvg = nameLower.endsWith(".svg")
-                            meta = XmpInjector.parseXMP(originalBytes, isPng = isPng, isEps = isEps, isSvg = isSvg)
-                            if (meta != null && (meta.title.isNotBlank() || meta.description.isNotBlank() || meta.keywords.isNotBlank() || meta.creator.isNotBlank())) {
-                                hasMeta = true
-                            }
+                                if (isJpg || isPng) {
+                                    previewUri = uri
 
-                            if (isSvg) {
-                                val ratio = SvgRenderer.getSvgAspectRatio(originalBytes)
-                                if (ratio > 0.05f) {
-                                    itemAspectRatio = ratio
-                                }
-                                val base64Png = SvgRenderer.renderSvgToPngBase64(context, originalBytes)
-                                if (base64Png != null) {
+                                    // 1. Efficient bounds decoding directly from stream (0 pixel allocation)
                                     try {
-                                        val decoded = android.util.Base64.decode(base64Png, android.util.Base64.NO_WRAP)
-                                        val tempFile = java.io.File(context.cacheDir, "preview_svg_${System.currentTimeMillis()}_$nextId.png")
-                                        tempFile.writeBytes(decoded)
-                                        previewUri = Uri.fromFile(tempFile)
-                                        previewBytes = decoded
-                                    } catch (e: Exception) {
-                                        e.printStackTrace()
-                                    }
-                                }
-                            } else if (isEps) {
-                                try {
-                                    val bboxRegex = Regex("""(?:%%BoundingBox:|%%HiResBoundingBox:|%AIGPU_BoundingBox:)\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)""")
-                                    val textSample = String(originalBytes.take(4096).toByteArray(), Charsets.UTF_8)
-                                    val match = bboxRegex.find(textSample)
-                                    if (match != null) {
-                                        val x1 = match.groupValues[1].toFloat()
-                                        val y1 = match.groupValues[2].toFloat()
-                                        val x2 = match.groupValues[3].toFloat()
-                                        val y2 = match.groupValues[4].toFloat()
-                                        val w = kotlin.math.abs(x2 - x1)
-                                        val h = kotlin.math.abs(y2 - y1)
-                                        if (w > 0f && h > 0f) {
-                                            itemAspectRatio = w / h
+                                        context.contentResolver.openInputStream(uri)?.use { stream ->
+                                            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                            android.graphics.BitmapFactory.decodeStream(stream, null, opts)
+                                            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                                                itemAspectRatio = opts.outWidth.toFloat() / opts.outHeight.toFloat()
+                                            }
                                         }
-                                    }
-                                } catch (_: Exception) {}
+                                    } catch (_: Exception) {}
 
-                                val base64Jpg = EpsRenderer.renderEpsToJpegBase64(context, originalBytes)
-                                if (base64Jpg != null) {
+                                    // 2. Read only header chunk for XMP metadata without loading whole payload
                                     try {
-                                        val decoded = android.util.Base64.decode(base64Jpg, android.util.Base64.NO_WRAP)
-                                        val tempFile = java.io.File(context.cacheDir, "preview_eps_${System.currentTimeMillis()}_$nextId.jpg")
-                                        tempFile.writeBytes(decoded)
-                                        previewUri = Uri.fromFile(tempFile)
-                                        previewBytes = decoded
+                                        val headerBytes = FileHelper.readHeaderBytesFromUri(context, uri, maxBytes = 262144)
+                                        if (headerBytes != null && headerBytes.isNotEmpty()) {
+                                            meta = XmpInjector.parseXMP(headerBytes, isPng = isPng, isEps = false, isSvg = false)
+                                            if (meta != null && (meta.title.isNotBlank() || meta.description.isNotBlank() || meta.keywords.isNotBlank() || meta.creator.isNotBlank())) {
+                                                hasMeta = true
+                                            }
+                                        }
+                                    } catch (_: Exception) {}
+                                } else if (isSvg) {
+                                    try {
+                                        val svgBytes = FileHelper.readBytesFromUri(context, uri)
+                                        if (svgBytes != null) {
+                                            meta = XmpInjector.parseXMP(svgBytes, isPng = false, isEps = false, isSvg = true)
+                                            if (meta != null && (meta.title.isNotBlank() || meta.description.isNotBlank() || meta.keywords.isNotBlank() || meta.creator.isNotBlank())) {
+                                                hasMeta = true
+                                            }
+                                            val ratio = SvgRenderer.getSvgAspectRatio(svgBytes)
+                                            if (ratio > 0.05f) {
+                                                itemAspectRatio = ratio
+                                            }
+                                            val base64Png = SvgRenderer.renderSvgToPngBase64(context, svgBytes)
+                                            if (base64Png != null) {
+                                                val decoded = android.util.Base64.decode(base64Png, android.util.Base64.NO_WRAP)
+                                                val tempFile = java.io.File(context.cacheDir, "preview_svg_${System.currentTimeMillis()}_$nextId.png")
+                                                tempFile.writeBytes(decoded)
+                                                previewUri = Uri.fromFile(tempFile)
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                } else if (isEps) {
+                                    try {
+                                        val epsBytes = FileHelper.readBytesFromUri(context, uri)
+                                        if (epsBytes != null) {
+                                            meta = XmpInjector.parseXMP(epsBytes, isPng = false, isEps = true, isSvg = false)
+                                            if (meta != null && (meta.title.isNotBlank() || meta.description.isNotBlank() || meta.keywords.isNotBlank() || meta.creator.isNotBlank())) {
+                                                hasMeta = true
+                                            }
+                                            try {
+                                                val bboxRegex = Regex("""(?:%%BoundingBox:|%%HiResBoundingBox:|%AIGPU_BoundingBox:)\s*(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)""")
+                                                val textSample = String(epsBytes.take(4096).toByteArray(), Charsets.UTF_8)
+                                                val match = bboxRegex.find(textSample)
+                                                if (match != null) {
+                                                    val x1 = match.groupValues[1].toFloat()
+                                                    val y1 = match.groupValues[2].toFloat()
+                                                    val x2 = match.groupValues[3].toFloat()
+                                                    val y2 = match.groupValues[4].toFloat()
+                                                    val w = kotlin.math.abs(x2 - x1)
+                                                    val h = kotlin.math.abs(y2 - y1)
+                                                    if (w > 0f && h > 0f) {
+                                                        itemAspectRatio = w / h
+                                                    }
+                                                }
+                                            } catch (_: Exception) {}
+
+                                            val base64Jpg = EpsRenderer.renderEpsToJpegBase64(context, epsBytes)
+                                            if (base64Jpg != null) {
+                                                val decoded = android.util.Base64.decode(base64Jpg, android.util.Base64.NO_WRAP)
+                                                val tempFile = java.io.File(context.cacheDir, "preview_eps_${System.currentTimeMillis()}_$nextId.jpg")
+                                                tempFile.writeBytes(decoded)
+                                                previewUri = Uri.fromFile(tempFile)
+                                            }
+                                        }
                                     } catch (e: Exception) {
                                         e.printStackTrace()
                                     }
                                 }
-                            } else if (isPng || nameLower.endsWith(".jpg") || nameLower.endsWith(".jpeg")) {
-                                previewUri = uri
-                                previewBytes = originalBytes
-                                try {
-                                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                    android.graphics.BitmapFactory.decodeByteArray(originalBytes, 0, originalBytes.size, opts)
-                                    if (opts.outWidth > 0 && opts.outHeight > 0) {
-                                        itemAspectRatio = opts.outWidth.toFloat() / opts.outHeight.toFloat()
-                                    }
-                                } catch (_: Exception) {}
-                            }
 
-                            if (itemAspectRatio <= 0.05f && previewBytes != null) {
-                                try {
-                                    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                    android.graphics.BitmapFactory.decodeByteArray(previewBytes, 0, previewBytes.size, opts)
-                                    if (opts.outWidth > 0 && opts.outHeight > 0) {
-                                        itemAspectRatio = opts.outWidth.toFloat() / opts.outHeight.toFloat()
-                                    }
-                                } catch (_: Exception) {}
+                                current.add(
+                                    ImageItem(
+                                        id = nextId++,
+                                        name = name,
+                                        uri = uri,
+                                        originalBytes = null, // Set to null to avoid out-of-memory errors
+                                        injectedBytes = null,
+                                        hasMetadata = hasMeta,
+                                        isSelected = isAllMode,
+                                        metadata = meta,
+                                        previewUri = previewUri,
+                                        previewBytes = null, // Never retain heavy raw bytes in RAM
+                                        aspectRatio = itemAspectRatio
+                                    )
+                                )
                             }
                         }
-
-                        current.add(
-                            ImageItem(
-                                id = nextId++,
-                                name = name,
-                                uri = uri,
-                                originalBytes = null, // Set to null to avoid out-of-memory errors
-                                injectedBytes = null,
-                                hasMetadata = hasMeta,
-                                isSelected = isAllMode,
-                                metadata = meta,
-                                previewUri = previewUri,
-                                previewBytes = previewBytes,
-                                aspectRatio = itemAspectRatio
-                            )
-                        )
                     }
                 }
+
+                _imagesList.value = current
+                
+                // Restore form values
+                _title.value = backupT
+                _description.value = backupD
+                _keywords.value = backupK
+                _creator.value = backupC
+
+                // If user has manually input any metadata, do not overwrite it with original image metadata
+                val shouldUpdateFieldsFromSelection = backupT.isBlank() && backupD.isBlank() && backupK.isBlank()
+                recalculateMetadataFormFromSelection(updateFields = shouldUpdateFieldsFromSelection)
+            } finally {
+                if (showLoading) {
+                    _isGlobalProcessing.value = false
+                    _globalProcessingText.value = ""
+                }
             }
-
-            _imagesList.value = current
-            
-            // Restore form values
-            _title.value = backupT
-            _description.value = backupD
-            _keywords.value = backupK
-            _creator.value = backupC
-
-            // If user has manually input any metadata, do not overwrite it with original image metadata
-            val shouldUpdateFieldsFromSelection = backupT.isBlank() && backupD.isBlank() && backupK.isBlank()
-            recalculateMetadataFormFromSelection(updateFields = shouldUpdateFieldsFromSelection)
         }
     }
 
