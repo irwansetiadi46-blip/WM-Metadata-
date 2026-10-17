@@ -300,6 +300,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var globalGenerationJob: kotlinx.coroutines.Job? = null
     private val individualGenerationJobs = mutableMapOf<Int, kotlinx.coroutines.Job>()
     private var currentBatchProcessingId: Int? = null
+    private val _currentlyGeneratingImageId = MutableStateFlow<Int?>(null)
+    val currentlyGeneratingImageId = _currentlyGeneratingImageId.asStateFlow()
 
     private val _isInjecting = MutableStateFlow(false)
     val isInjecting = _isInjecting.asStateFlow()
@@ -716,8 +718,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             _imagesList.value = _imagesList.value.map { item ->
                 val metaFileName = item.individualFileName.trim()
-                if (metaFileName.isNotBlank()) {
-                    val sanitizedBase = sanitizeFileName(metaFileName)
+                val candidate = if (metaFileName.isNotBlank()) metaFileName else item.individualTitle.trim()
+                if (candidate.isNotBlank()) {
+                    val sanitizedBase = sanitizeFileName(candidate)
                     val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
                     if (sanitizedBase.isNotEmpty()) {
                         item.copy(name = "$sanitizedBase$ext")
@@ -1055,6 +1058,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Cancel all ongoing jobs
         globalGenerationJob?.cancel()
         currentBatchProcessingId = null
+        _currentlyGeneratingImageId.value = null
         individualGenerationJobs.values.forEach { it.cancel() }
         individualGenerationJobs.clear()
         _isGeneratingAi.value = false
@@ -1159,6 +1163,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelGlobalGeneration() {
         globalGenerationJob?.cancel()
         currentBatchProcessingId = null
+        _currentlyGeneratingImageId.value = null
         _isGeneratingAi.value = false
         _isGlobalProcessing.value = false
         _globalProcessingText.value = ""
@@ -1176,9 +1181,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun cancelIndividualGeneration(id: Int) {
         individualGenerationJobs[id]?.cancel()
         individualGenerationJobs.remove(id)
+        if (_currentlyGeneratingImageId.value == id) {
+            _currentlyGeneratingImageId.value = null
+        }
         if (currentBatchProcessingId == id) {
             globalGenerationJob?.cancel()
             currentBatchProcessingId = null
+            _currentlyGeneratingImageId.value = null
             _isGeneratingAi.value = false
             _isGlobalProcessing.value = false
             _globalProcessingText.value = ""
@@ -1366,6 +1375,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val imageItem = _imagesList.value.find { it.id == id } ?: return
 
         val job = viewModelScope.launch {
+            _currentlyGeneratingImageId.value = imageItem.id
             MetadataProcessingService.start(context, "Generating metadata for ${imageItem.name}...")
             try {
                 _imagesList.value = _imagesList.value.map { 
@@ -1443,6 +1453,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } finally {
+                if (_currentlyGeneratingImageId.value == imageItem.id) {
+                    _currentlyGeneratingImageId.value = null
+                }
                 individualGenerationJobs.remove(imageItem.id)
                 if (individualGenerationJobs.isEmpty() && currentBatchProcessingId == null) {
                     MetadataProcessingService.stop(context)
@@ -1500,6 +1513,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 var completed = 0
                 for (imageItem in targetImages) {
                     currentBatchProcessingId = imageItem.id
+                    _currentlyGeneratingImageId.value = imageItem.id
                     _globalProcessingText.value = "Generating Process...($completed/$total)"
                     MetadataProcessingService.updateProgress(context, "Generating metadata ($completed/$total)...")
 
@@ -1596,6 +1610,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally {
                 MetadataProcessingService.stop(context)
                 currentBatchProcessingId = null
+                _currentlyGeneratingImageId.value = null
                 _isGeneratingAi.value = false
                 _isGlobalProcessing.value = false
                 _globalProcessingText.value = ""
@@ -2077,7 +2092,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
-        val sanitizedBase = if (metaFileName.isNotBlank()) sanitizeFileName(metaFileName) else ""
+        val candidateBase = if (metaFileName.isNotBlank()) metaFileName else item.individualTitle.trim()
+        val sanitizedBase = if (candidateBase.isNotBlank()) sanitizeFileName(candidateBase) else ""
         val newFileName = if (_isAutoRenameEnabled.value && sanitizedBase.isNotEmpty()) "$sanitizedBase$ext" else item.originalName.ifBlank { item.name }
 
         viewModelScope.launch {
@@ -2110,6 +2126,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
 
                     var overwriteSuccess = true
+                    var finalUri = item.uri
+                    var finalOriginalName = item.originalName
                     if (_isSaveOverwriteEnabled.value) {
                         val result = withContext(Dispatchers.IO) {
                             FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
@@ -2117,6 +2135,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         when (result) {
                             is OverwriteResult.Success -> {
                                 overwriteSuccess = true
+                                // Auto Rename terintegrasi: Ganti juga filename pada file aslinya
+                                if (_isAutoRenameEnabled.value && newFileName.isNotBlank() && newFileName != item.originalName) {
+                                    val renamedUri = withContext(Dispatchers.IO) {
+                                        FileHelper.renameOriginalFile(context, item.uri, newFileName)
+                                    }
+                                    if (renamedUri != null) {
+                                        finalUri = renamedUri
+                                        finalOriginalName = newFileName
+                                    }
+                                }
                             }
                             is OverwriteResult.PermissionRequired -> {
                                 pendingOverwriteAction = { injectIndividualMetadata(id, autoDownload) }
@@ -2134,7 +2162,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     _imagesList.value = _imagesList.value.map { 
                         if (it.id == id) it.copy(
+                            uri = if (_isSaveOverwriteEnabled.value && overwriteSuccess) finalUri else it.uri,
                             name = newFileName,
+                            originalName = if (_isSaveOverwriteEnabled.value && overwriteSuccess) finalOriginalName else it.originalName,
                             injectedBytes = injectedBytes,
                             originalBytes = if (_isSaveOverwriteEnabled.value && overwriteSuccess) injectedBytes else it.originalBytes,
                             hasMetadata = true,
@@ -2162,7 +2192,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     _toastFlow.value = if (_isSaveOverwriteEnabled.value) {
-                        if (overwriteSuccess) "File Asli Berhasil Diperbarui!" else "Gagal Menimpa File Asli"
+                        if (overwriteSuccess) "Overwrite Injected" else "Gagal Menimpa File Asli"
                     } else "Injected"
                 } else {
                     _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = false) else it }
@@ -2264,7 +2294,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
 
                     val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
-                    val sanitizedBase = if (metaFileName.isNotBlank()) sanitizeFileName(metaFileName) else ""
+                    val candidateBase = if (metaFileName.isNotBlank()) metaFileName else item.individualTitle.trim()
+                    val sanitizedBase = if (candidateBase.isNotBlank()) sanitizeFileName(candidateBase) else ""
                     val newFileName = if (_isAutoRenameEnabled.value && sanitizedBase.isNotEmpty()) "$sanitizedBase$ext" else item.originalName.ifBlank { item.name }
 
                     try {
@@ -2294,6 +2325,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
 
                             var overwriteSuccess = true
+                            var finalUri = item.uri
+                            var finalOriginalName = item.originalName
                             if (_isSaveOverwriteEnabled.value) {
                                 val result = withContext(Dispatchers.IO) {
                                     FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
@@ -2301,6 +2334,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 when (result) {
                                     is OverwriteResult.Success -> {
                                         overwriteSuccess = true
+                                        // Auto Rename terintegrasi: Ganti juga filename pada file aslinya
+                                        if (_isAutoRenameEnabled.value && newFileName.isNotBlank() && newFileName != item.originalName) {
+                                            val renamedUri = withContext(Dispatchers.IO) {
+                                                FileHelper.renameOriginalFile(context, item.uri, newFileName)
+                                            }
+                                            if (renamedUri != null) {
+                                                finalUri = renamedUri
+                                                finalOriginalName = newFileName
+                                            }
+                                        }
                                     }
                                     is OverwriteResult.PermissionRequired -> {
                                         pendingOverwriteAction = { injectAllIndividualMetadata() }
@@ -2318,7 +2361,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val indexInMaster = updatedList.indexOfFirst { it.id == item.id }
                             if (indexInMaster != -1) {
                                 updatedList[indexInMaster] = updatedList[indexInMaster].copy(
+                                    uri = if (_isSaveOverwriteEnabled.value && overwriteSuccess) finalUri else updatedList[indexInMaster].uri,
                                     name = newFileName,
+                                    originalName = if (_isSaveOverwriteEnabled.value && overwriteSuccess) finalOriginalName else updatedList[indexInMaster].originalName,
                                     injectedBytes = injectedBytes,
                                     originalBytes = if (_isSaveOverwriteEnabled.value && overwriteSuccess) injectedBytes else updatedList[indexInMaster].originalBytes,
                                     hasMetadata = true,
@@ -2341,6 +2386,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 _imagesList.value = updatedList
                 _injectionStatusText.value = "INJECTION DONE ($successCount OK, $failCount FAIL)"
+                _toastFlow.value = if (_isSaveOverwriteEnabled.value) {
+                    if (failCount == 0) "Overwrite Injected" else "Selesai: $successCount Sukses, $failCount Gagal"
+                } else {
+                    "Injected"
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 _injectionStatusText.value = "INJECTION ERROR"
@@ -2388,7 +2438,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 for (i in selected.indices) {
                     val item = selected[i]
                     val ext = if (item.originalName.contains('.')) item.originalName.substring(item.originalName.lastIndexOf('.')) else if (item.name.contains('.')) item.name.substring(item.name.lastIndexOf('.')) else ""
-                    val sanitizedBase = if (metaFileName.isNotBlank()) sanitizeFileName(metaFileName) else ""
+                    val candidateBase = if (metaFileName.isNotBlank()) metaFileName else _title.value.trim()
+                    val sanitizedBase = if (candidateBase.isNotBlank()) sanitizeFileName(candidateBase) else ""
                     val newFileName = if (_isAutoRenameEnabled.value && sanitizedBase.isNotEmpty()) {
                         if (selected.size > 1) "$sanitizedBase-${i + 1}$ext" else "$sanitizedBase$ext"
                     } else item.originalName.ifBlank { item.name }
@@ -2443,6 +2494,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             )
 
                             var overwriteSuccess = true
+                            var finalUri = item.uri
+                            var finalOriginalName = item.originalName
                             if (_isSaveOverwriteEnabled.value) {
                                 val result = withContext(Dispatchers.IO) {
                                     FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
@@ -2450,6 +2503,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 when (result) {
                                     is OverwriteResult.Success -> {
                                         overwriteSuccess = true
+                                        // Auto Rename terintegrasi: Ganti juga filename pada file aslinya
+                                        if (_isAutoRenameEnabled.value && newFileName.isNotBlank() && newFileName != item.originalName) {
+                                            val renamedUri = withContext(Dispatchers.IO) {
+                                                FileHelper.renameOriginalFile(context, item.uri, newFileName)
+                                            }
+                                            if (renamedUri != null) {
+                                                finalUri = renamedUri
+                                                finalOriginalName = newFileName
+                                            }
+                                        }
                                     }
                                     is OverwriteResult.PermissionRequired -> {
                                         pendingOverwriteAction = { injectMetadata() }
@@ -2468,7 +2531,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val indexInMaster = updatedList.indexOfFirst { it.id == item.id }
                             if (indexInMaster != -1) {
                                 updatedList[indexInMaster] = updatedList[indexInMaster].copy(
+                                    uri = if (_isSaveOverwriteEnabled.value && overwriteSuccess) finalUri else updatedList[indexInMaster].uri,
                                     name = newFileName,
+                                    originalName = if (_isSaveOverwriteEnabled.value && overwriteSuccess) finalOriginalName else updatedList[indexInMaster].originalName,
                                     individualFileName = if (metaFileName.isNotBlank()) metaFileName else updatedList[indexInMaster].individualFileName,
                                     injectedBytes = injectedBytes,
                                     originalBytes = if (_isSaveOverwriteEnabled.value && overwriteSuccess) injectedBytes else updatedList[indexInMaster].originalBytes,
@@ -2492,7 +2557,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 _imagesList.value = updatedList
                 _injectionStatusText.value = "INJECTION 100% DONE"
-                _toastFlow.value = "Injected"
+                _toastFlow.value = if (_isSaveOverwriteEnabled.value) {
+                    if (failCount == 0) "Overwrite Injected" else "Selesai: $successCount Sukses, $failCount Gagal"
+                } else {
+                    "Injected"
+                }
                 recalculateMetadataFormFromSelection()
             } catch (e: Exception) {
                 e.printStackTrace()

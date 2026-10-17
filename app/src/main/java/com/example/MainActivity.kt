@@ -190,6 +190,7 @@ fun MainScreen(
     val isDownloading by viewModel.isDownloading.collectAsStateWithLifecycle()
     val isGlobalProcessing by viewModel.isGlobalProcessing.collectAsStateWithLifecycle()
     val globalProcessingText by viewModel.globalProcessingText.collectAsStateWithLifecycle()
+    val currentlyGeneratingImageId by viewModel.currentlyGeneratingImageId.collectAsStateWithLifecycle()
     val toastMessage by viewModel.toastFlow.collectAsStateWithLifecycle()
     val svgExportDialogState by viewModel.svgExportDialogState.collectAsStateWithLifecycle()
     val isTouchEffectEnabled by viewModel.isTouchEffectEnabled.collectAsStateWithLifecycle()
@@ -388,6 +389,48 @@ fun MainScreen(
                     animationSpec = tween(durationMillis = 700, easing = FastOutSlowInEasing)
                 )
             }
+        }
+    }
+
+    val density = LocalDensity.current
+    val itemCardCoordinates = remember { mutableMapOf<Int, LayoutCoordinates>() }
+
+    val activeGeneratingId by remember(currentlyGeneratingImageId, imagesList) {
+        derivedStateOf {
+            currentlyGeneratingImageId ?: imagesList.find { it.isGeneratingMetadata || it.processStatus == ProcessStatus.PROCESSING }?.id
+        }
+    }
+
+    // Auto-scroll ke card preview yang sedang diproses Generate Metadata
+    LaunchedEffect(activeGeneratingId) {
+        val targetId = activeGeneratingId ?: return@LaunchedEffect
+        // Beri jeda sejenak untuk memastikan layout recomposition card telah selesai diukur
+        for (attempt in 0..4) {
+            val containerCoords = scrollContainerCoordinates
+            val cardCoords = itemCardCoordinates[targetId]
+            if (containerCoords != null && cardCoords != null && containerCoords.isAttached && cardCoords.isAttached) {
+                val relativeY = containerCoords.localPositionOf(cardCoords, Offset.Zero).y
+                val cardHeight = cardCoords.size.height
+                val viewportHeight = containerCoords.size.height
+
+                val topPaddingPx = with(density) { 50.dp.toPx() }
+                val bottomBarClearancePx = with(density) { if (isBottomBarExpanded) 195.dp.toPx() else 85.dp.toPx() }
+                val visibleBottomPx = viewportHeight - bottomBarClearancePx
+
+                // Cek apakah card sudah berada di area pandang layar yang nyaman
+                val isCardComfortablyVisible = relativeY >= topPaddingPx && (relativeY + (cardHeight * 0.35f).coerceAtMost(220f)) <= visibleBottomPx
+
+                if (!isCardComfortablyVisible && mainScrollState.maxValue > 0) {
+                    val desiredTopOffsetPx = with(density) { 68.dp.toPx() }
+                    val targetScroll = (mainScrollState.value + relativeY - desiredTopOffsetPx).toInt().coerceIn(0, mainScrollState.maxValue)
+                    mainScrollState.animateScrollTo(
+                        value = targetScroll,
+                        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing)
+                    )
+                }
+                break
+            }
+            delay(80)
         }
     }
 
@@ -946,11 +989,17 @@ fun MainScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             imagesList.forEach { item ->
-                                FullImageCard(
-                                    item = item,
-                                    viewModel = viewModel,
-                                    clipboardManager = clipboardManager
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onGloballyPositioned { itemCardCoordinates[item.id] = it }
+                                ) {
+                                    FullImageCard(
+                                        item = item,
+                                        viewModel = viewModel,
+                                        clipboardManager = clipboardManager
+                                    )
+                                }
                             }
                         }
                     } else if (isGridView) {
@@ -967,7 +1016,9 @@ fun MainScreen(
                                     rowItems.forEach { item ->
                                         CompactGridImageCard(
                                             item = item,
-                                            modifier = Modifier.weight(1f),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .onGloballyPositioned { itemCardCoordinates[item.id] = it },
                                             onClick = { selectedDetailImageId = item.id }
                                         )
                                     }
@@ -986,6 +1037,9 @@ fun MainScreen(
                             imagesList.forEach { item ->
                                 CompactVerticalImageCard(
                                     item = item,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onGloballyPositioned { itemCardCoordinates[item.id] = it },
                                     onClick = { selectedDetailImageId = item.id }
                                 )
                             }
@@ -1002,7 +1056,6 @@ fun MainScreen(
     // Custom Draggable Scroll Handle (within the scroll area)
     val maxScroll = mainScrollState.maxValue.toFloat()
     if (maxScroll > 0f) {
-        val density = LocalDensity.current
         val handleHeight = 36.dp
         val handleWidth = 8.dp
         val scrollTrackHeight = (screenHeight - (if (headerHeightPx > 0f) headerHeightPx else 52f)).coerceAtLeast(1f)

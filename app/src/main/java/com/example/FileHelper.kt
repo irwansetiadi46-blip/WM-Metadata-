@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import java.io.ByteArrayOutputStream
@@ -224,6 +225,64 @@ object FileHelper {
             e.printStackTrace()
             OverwriteResult.Error(e.message ?: "Gagal menimpa berkas asli")
         }
+    }
+
+    fun renameOriginalFile(context: Context, uri: Uri, newDisplayName: String): Uri? {
+        if (newDisplayName.isBlank()) return null
+
+        // 1. Storage Access Framework (SAF) DocumentsContract
+        try {
+            if (DocumentsContract.isDocumentUri(context, uri)) {
+                val renamedUri = DocumentsContract.renameDocument(context.contentResolver, uri, newDisplayName)
+                if (renamedUri != null) {
+                    return renamedUri
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // 2. MediaStore Provider DISPLAY_NAME update
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, newDisplayName)
+            }
+            val rows = context.contentResolver.update(uri, values, null, null)
+            if (rows > 0) {
+                return uri
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // 3. Fallback OpenableColumns DISPLAY_NAME update
+        try {
+            val values = ContentValues().apply {
+                put(OpenableColumns.DISPLAY_NAME, newDisplayName)
+            }
+            val rows = context.contentResolver.update(uri, values, null, null)
+            if (rows > 0) {
+                return uri
+            }
+        } catch (_: Exception) {}
+
+        // 4. Fallback for file:// or absolute path
+        if (uri.scheme == "file" || uri.path?.startsWith("/") == true) {
+            try {
+                val file = uri.path?.let { java.io.File(it) }
+                if (file != null && file.exists()) {
+                    val targetParent = file.parentFile ?: context.filesDir
+                    val newFile = java.io.File(targetParent, newDisplayName)
+                    if (file.renameTo(newFile)) {
+                        return Uri.fromFile(newFile)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        return null
     }
 }
 
