@@ -12,6 +12,12 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
+sealed class OverwriteResult {
+    object Success : OverwriteResult()
+    data class PermissionRequired(val intentSender: android.content.IntentSender) : OverwriteResult()
+    data class Error(val message: String) : OverwriteResult()
+}
+
 object FileHelper {
 
     fun readBytesFromUri(context: Context, uri: Uri): ByteArray? {
@@ -176,22 +182,47 @@ object FileHelper {
         }
     }
 
-    fun overwriteOriginalFile(context: Context, uri: Uri, bytes: ByteArray): Boolean {
+    fun overwriteOriginalFile(context: Context, uri: Uri, bytes: ByteArray): OverwriteResult {
         return try {
             val outputStream = context.contentResolver.openOutputStream(uri, "wt")
                 ?: context.contentResolver.openOutputStream(uri, "w")
+                ?: context.contentResolver.openOutputStream(uri, "rwt")
             if (outputStream != null) {
                 outputStream.use { out ->
                     out.write(bytes)
                     out.flush()
                 }
-                true
+                OverwriteResult.Success
             } else {
-                false
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        val pi = MediaStore.createWriteRequest(context.contentResolver, listOf(uri))
+                        OverwriteResult.PermissionRequired(pi.intentSender)
+                    } catch (_: Exception) {
+                        OverwriteResult.Error("Tidak dapat membuka berkas untuk penulisan")
+                    }
+                } else {
+                    OverwriteResult.Error("Tidak dapat membuka berkas untuk penulisan")
+                }
+            }
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && e is android.app.RecoverableSecurityException) {
+                OverwriteResult.PermissionRequired(e.userAction.actionIntent.intentSender)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    val pi = MediaStore.createWriteRequest(context.contentResolver, listOf(uri))
+                    OverwriteResult.PermissionRequired(pi.intentSender)
+                } catch (inner: Exception) {
+                    inner.printStackTrace()
+                    OverwriteResult.Error("Izin tulis berkas ditolak sistem: ${e.message}")
+                }
+            } else {
+                OverwriteResult.Error("Izin tulis berkas ditolak sistem: ${e.message}")
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            false
+            OverwriteResult.Error(e.message ?: "Gagal menimpa berkas asli")
         }
     }
 }

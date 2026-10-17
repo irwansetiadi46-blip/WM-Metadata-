@@ -278,6 +278,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isSaveOverwriteEnabled = MutableStateFlow(false)
     val isSaveOverwriteEnabled = _isSaveOverwriteEnabled.asStateFlow()
 
+    private val _writePermissionRequest = MutableStateFlow<android.content.IntentSender?>(null)
+    val writePermissionRequest = _writePermissionRequest.asStateFlow()
+
+    private var pendingOverwriteAction: (() -> Unit)? = null
+
+    fun onWritePermissionGranted() {
+        val action = pendingOverwriteAction
+        pendingOverwriteAction = null
+        action?.invoke()
+    }
+
+    fun clearWritePermissionRequest() {
+        _writePermissionRequest.value = null
+    }
+
     // --- Loading & Injection Progress State ---
     private val _isGeneratingAi = MutableStateFlow(false)
     val isGeneratingAi = _isGeneratingAi.asStateFlow()
@@ -2094,9 +2109,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         creator = metaCreator
                     )
 
+                    var overwriteSuccess = true
                     if (_isSaveOverwriteEnabled.value) {
-                        withContext(Dispatchers.IO) {
+                        val result = withContext(Dispatchers.IO) {
                             FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
+                        }
+                        when (result) {
+                            is OverwriteResult.Success -> {
+                                overwriteSuccess = true
+                            }
+                            is OverwriteResult.PermissionRequired -> {
+                                pendingOverwriteAction = { injectIndividualMetadata(id, autoDownload) }
+                                _writePermissionRequest.value = result.intentSender
+                                _toastFlow.value = "Meminta izin penulisan berkas asli..."
+                                _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = false) else it }
+                                return@launch
+                            }
+                            is OverwriteResult.Error -> {
+                                overwriteSuccess = false
+                                _toastFlow.value = "Gagal Menimpa: ${result.message}"
+                            }
                         }
                     }
 
@@ -2104,7 +2136,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         if (it.id == id) it.copy(
                             name = newFileName,
                             injectedBytes = injectedBytes,
-                            originalBytes = if (_isSaveOverwriteEnabled.value) injectedBytes else it.originalBytes,
+                            originalBytes = if (_isSaveOverwriteEnabled.value && overwriteSuccess) injectedBytes else it.originalBytes,
                             hasMetadata = true,
                             metadata = newestXmpData,
                             isInjectingIndividual = false
@@ -2129,7 +2161,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
 
-                    _toastFlow.value = if (_isSaveOverwriteEnabled.value) "Injected & Overwritten" else "Injected"
+                    _toastFlow.value = if (_isSaveOverwriteEnabled.value) {
+                        if (overwriteSuccess) "File Asli Berhasil Diperbarui!" else "Gagal Menimpa File Asli"
+                    } else "Injected"
                 } else {
                     _imagesList.value = _imagesList.value.map { if (it.id == id) it.copy(isInjectingIndividual = false) else it }
                     _toastFlow.value = "File Error"
@@ -2259,9 +2293,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 creator = metaCreator
                             )
 
+                            var overwriteSuccess = true
                             if (_isSaveOverwriteEnabled.value) {
-                                withContext(Dispatchers.IO) {
+                                val result = withContext(Dispatchers.IO) {
                                     FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
+                                }
+                                when (result) {
+                                    is OverwriteResult.Success -> {
+                                        overwriteSuccess = true
+                                    }
+                                    is OverwriteResult.PermissionRequired -> {
+                                        pendingOverwriteAction = { injectAllIndividualMetadata() }
+                                        _writePermissionRequest.value = result.intentSender
+                                        _toastFlow.value = "Meminta izin penulisan berkas asli..."
+                                        _isInjecting.value = false
+                                        return@launch
+                                    }
+                                    is OverwriteResult.Error -> {
+                                        overwriteSuccess = false
+                                    }
                                 }
                             }
 
@@ -2270,12 +2320,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 updatedList[indexInMaster] = updatedList[indexInMaster].copy(
                                     name = newFileName,
                                     injectedBytes = injectedBytes,
-                                    originalBytes = if (_isSaveOverwriteEnabled.value) injectedBytes else updatedList[indexInMaster].originalBytes,
+                                    originalBytes = if (_isSaveOverwriteEnabled.value && overwriteSuccess) injectedBytes else updatedList[indexInMaster].originalBytes,
                                     hasMetadata = true,
                                     metadata = newestXmpData
                                 )
                             }
-                            successCount++
+                            if (overwriteSuccess) successCount++ else failCount++
                         } else {
                             failCount++
                         }
@@ -2392,9 +2442,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 creator = metaCreator
                             )
 
+                            var overwriteSuccess = true
                             if (_isSaveOverwriteEnabled.value) {
-                                withContext(Dispatchers.IO) {
+                                val result = withContext(Dispatchers.IO) {
                                     FileHelper.overwriteOriginalFile(context, item.uri, injectedBytes)
+                                }
+                                when (result) {
+                                    is OverwriteResult.Success -> {
+                                        overwriteSuccess = true
+                                    }
+                                    is OverwriteResult.PermissionRequired -> {
+                                        pendingOverwriteAction = { injectMetadata() }
+                                        _writePermissionRequest.value = result.intentSender
+                                        _toastFlow.value = "Meminta izin penulisan berkas asli..."
+                                        _isInjecting.value = false
+                                        return@launch
+                                    }
+                                    is OverwriteResult.Error -> {
+                                        overwriteSuccess = false
+                                    }
                                 }
                             }
 
@@ -2405,12 +2471,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     name = newFileName,
                                     individualFileName = if (metaFileName.isNotBlank()) metaFileName else updatedList[indexInMaster].individualFileName,
                                     injectedBytes = injectedBytes,
-                                    originalBytes = if (_isSaveOverwriteEnabled.value) injectedBytes else updatedList[indexInMaster].originalBytes,
+                                    originalBytes = if (_isSaveOverwriteEnabled.value && overwriteSuccess) injectedBytes else updatedList[indexInMaster].originalBytes,
                                     hasMetadata = true,
                                     metadata = newestXmpData
                                 )
                             }
-                            successCount++
+                            if (overwriteSuccess) successCount++ else failCount++
                         } else {
                             failCount++
                         }

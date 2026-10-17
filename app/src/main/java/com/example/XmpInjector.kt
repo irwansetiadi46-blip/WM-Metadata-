@@ -593,6 +593,82 @@ object XmpInjector {
         }
     }
 
+    fun removeExistingXmpFromJpeg(bytes: ByteArray): ByteArray {
+        if (bytes.size < 2 || bytes[0] != 0xFF.toByte() || bytes[1] != 0xD8.toByte()) {
+            return bytes
+        }
+        val signature = "http://ns.adobe.com/xap/1.0/\u0000"
+        val sigBytes = signature.toByteArray(StandardCharsets.UTF_8)
+        val baos = ByteArrayOutputStream()
+        baos.write(bytes[0].toInt())
+        baos.write(bytes[1].toInt())
+
+        var offset = 2
+        while (offset < bytes.size) {
+            if (offset + 1 >= bytes.size) {
+                baos.write(bytes, offset, bytes.size - offset)
+                break
+            }
+
+            val b1 = bytes[offset]
+            val b2 = bytes[offset + 1]
+
+            if (b1 != 0xFF.toByte()) {
+                baos.write(b1.toInt())
+                offset++
+                continue
+            }
+
+            val marker = b2.toInt() and 0xFF
+            if (marker == 0x00 || marker == 0xFF) {
+                baos.write(b1.toInt())
+                baos.write(b2.toInt())
+                offset += 2
+                continue
+            }
+
+            if (marker == 0xD9 || marker == 0xDA) {
+                baos.write(bytes, offset, bytes.size - offset)
+                break
+            }
+
+            if (offset + 3 >= bytes.size) {
+                baos.write(bytes, offset, bytes.size - offset)
+                break
+            }
+            val lenHigh = bytes[offset + 2].toInt() and 0xFF
+            val lenLow = bytes[offset + 3].toInt() and 0xFF
+            val segmentLen = (lenHigh shl 8) or lenLow
+
+            var isXmpSegment = false
+            if (marker == 0xE1) {
+                if (offset + 4 + sigBytes.size <= bytes.size) {
+                    var sigMatch = true
+                    for (j in sigBytes.indices) {
+                        if (bytes[offset + 4 + j] != sigBytes[j]) {
+                            sigMatch = false
+                            break
+                        }
+                    }
+                    if (sigMatch) {
+                        isXmpSegment = true
+                    }
+                }
+            }
+
+            if (!isXmpSegment) {
+                val totalSegLen = 2 + segmentLen
+                if (offset + totalSegLen <= bytes.size) {
+                    baos.write(bytes, offset, totalSegLen)
+                } else {
+                    baos.write(bytes, offset, bytes.size - offset)
+                }
+            }
+            offset += 2 + segmentLen
+        }
+        return baos.toByteArray()
+    }
+
     /**
      * Injects JPEG APP1 XMP metadata matching Lineva implementation (`ve`).
      */
@@ -616,6 +692,8 @@ object XmpInjector {
             return originalBytes
         }
 
+        val baseBytes = removeExistingXmpFromJpeg(originalBytes)
+
         val xmpXml = generateXmpPacket(t, d, kwList, c)
         val xmpHeader = "http://ns.adobe.com/xap/1.0/\u0000"
         val payload = (xmpHeader + xmpXml).toByteArray(StandardCharsets.UTF_8)
@@ -629,10 +707,10 @@ object XmpInjector {
 
         System.arraycopy(payload, 0, seg, 4, payload.size)
 
-        val out = ByteArray(originalBytes.size + seg.size)
-        System.arraycopy(originalBytes, 0, out, 0, 2)
+        val out = ByteArray(baseBytes.size + seg.size)
+        System.arraycopy(baseBytes, 0, out, 0, 2)
         System.arraycopy(seg, 0, out, 2, seg.size)
-        System.arraycopy(originalBytes, 2, out, 2 + seg.size, originalBytes.size - 2)
+        System.arraycopy(baseBytes, 2, out, 2 + seg.size, baseBytes.size - 2)
         return out
     }
 

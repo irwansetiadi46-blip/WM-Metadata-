@@ -22,6 +22,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
@@ -287,13 +288,44 @@ fun MainScreen(
         }
     }
 
-    // Photo Picker Contract
+    // Photo / Document Picker Contract with In-Place Write Permissions
     val pickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetMultipleContents()
+        contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) {
+            uris.forEach { uri ->
+                try {
+                    val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    context.contentResolver.takePersistableUriPermission(uri, flags)
+                } catch (_: Exception) {}
+            }
             viewModel.addImages(uris)
             isBottomBarExpanded = true
+        }
+    }
+
+    // MediaStore Write Permission Launcher (Android 10 & 11+)
+    val mediaWriteRequestLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.onWritePermissionGranted()
+        } else {
+            Toast.makeText(context, "Izin penulisan berkas asli ditolak oleh pengguna", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val writePermissionRequest by viewModel.writePermissionRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(writePermissionRequest) {
+        writePermissionRequest?.let { intentSender ->
+            try {
+                mediaWriteRequestLauncher.launch(
+                    IntentSenderRequest.Builder(intentSender).build()
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            viewModel.clearWritePermissionRequest()
         }
     }
 
@@ -302,7 +334,7 @@ fun MainScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            pickerLauncher.launch("*/*")
+            pickerLauncher.launch(arrayOf("*/*"))
         } else {
             Toast.makeText(context, "Izin penyimpanan dibutuhkan untuk memilih berkas.", Toast.LENGTH_SHORT).show()
         }
@@ -323,11 +355,11 @@ fun MainScreen(
 
     fun requestAndPickImages() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pickerLauncher.launch("*/*")
+            pickerLauncher.launch(arrayOf("*/*"))
         } else {
             val permission = Manifest.permission.READ_EXTERNAL_STORAGE
             if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
-                pickerLauncher.launch("*/*")
+                pickerLauncher.launch(arrayOf("*/*"))
             } else {
                 permissionLauncher.launch(permission)
             }
@@ -1668,47 +1700,58 @@ fun InAppToastNotification(
         modifier = modifier
     ) {
         if (!message.isNullOrBlank()) {
+            val isError = message.contains("Error", ignoreCase = true) ||
+                    message.contains("Failed", ignoreCase = true) ||
+                    message.contains("Gagal", ignoreCase = true) ||
+                    message.contains("Ditolak", ignoreCase = true) ||
+                    message.contains("Invalid", ignoreCase = true)
+
+            val isWarning = message.contains("Need", ignoreCase = true) ||
+                    message.contains("No Images", ignoreCase = true) ||
+                    message.contains("No Injected", ignoreCase = true) ||
+                    message.contains("Select Image", ignoreCase = true) ||
+                    message.contains("Metadata Empty", ignoreCase = true) ||
+                    message.contains("Kosong", ignoreCase = true) ||
+                    message.contains("Canceled", ignoreCase = true) ||
+                    message.contains("Batal", ignoreCase = true) ||
+                    message.contains("Meminta izin", ignoreCase = true)
+
+            val isSuccess = !isError && !isWarning
+
+            val toastColor = when {
+                isError -> Color(0xFFEF4444)
+                isWarning -> Color(0xFFF59E0B)
+                else -> Color(0xFF10B981)
+            }
+
+            val iconVector = when {
+                isError -> Icons.Default.Info
+                isWarning -> Icons.Default.Info
+                else -> Icons.Default.CheckCircle
+            }
+
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = Color(0xFF1E293B).copy(alpha = 0.96f),
+                color = Color(0xFF0F172A).copy(alpha = 0.96f),
                 shadowElevation = 8.dp,
                 border = BorderStroke(
-                    width = 1.dp,
-                    color = when {
-                        message.contains("Error", ignoreCase = true) || message.contains("Failed", ignoreCase = true) -> Color(0xFFEF4444)
-                        message.contains("Success", ignoreCase = true) || message.contains("Done", ignoreCase = true) || message.contains("Saved", ignoreCase = true) || message.contains("Injected", ignoreCase = true) || message.contains("Copied", ignoreCase = true) || message.contains("Generated", ignoreCase = true) || message.contains("Cleared", ignoreCase = true) -> Color(0xFF10B981)
-                        else -> Color(0xFFF25C05)
-                    }.copy(alpha = 0.8f)
+                    width = 1.2.dp,
+                    color = toastColor.copy(alpha = 0.85f)
                 ),
                 modifier = Modifier.padding(horizontal = 24.dp)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.Center
                 ) {
-                    val isError = message.contains("Error", ignoreCase = true) || message.contains("Failed", ignoreCase = true)
-                    val isSuccess = message.contains("Success", ignoreCase = true) || message.contains("Done", ignoreCase = true) || message.contains("Saved", ignoreCase = true) || message.contains("Injected", ignoreCase = true) || message.contains("Copied", ignoreCase = true) || message.contains("Generated", ignoreCase = true) || message.contains("Cleared", ignoreCase = true)
-                    
-                    val iconColor = when {
-                        isError -> Color(0xFFEF4444)
-                        isSuccess -> Color(0xFF10B981)
-                        else -> Color(0xFFF25C05)
-                    }
-
-                    val iconVector = when {
-                        isError -> Icons.Default.Info
-                        isSuccess -> Icons.Default.CheckCircle
-                        else -> Icons.Default.Info
-                    }
-
                     Icon(
                         imageVector = iconVector,
                         contentDescription = null,
-                        tint = iconColor,
-                        modifier = Modifier.size(16.dp)
+                        tint = toastColor,
+                        modifier = Modifier.size(17.dp)
                     )
-                    Spacer(modifier = Modifier.width(7.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = message,
                         color = Color.White,
